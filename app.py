@@ -6,24 +6,24 @@ import plotly.graph_objects as go
 from datetime import datetime, date
 
 # ==========================================
-# 1. 系統環境相容性
+# 1. 系統環境設定
 # ==========================================
-st.set_page_config(page_title="矛與盾 8.60 終極版", page_icon="🛡️", layout="wide")
-st.title("🛡️ 矛與盾 8.60 終極量化修復系統 ⚔️")
+st.set_page_config(page_title="矛與盾 8.80 終極穩定版", page_icon="🛡️", layout="wide")
+st.title("🛡️ 矛與盾 8.80 終極量化系統 ⚔️")
 
 def safe_divider():
-    """解決舊版 Streamlit 不支援 divider 的問題"""
+    """相容舊版 Streamlit 顯示"""
     try: st.divider()
     except: st.markdown("---")
 
 # ==========================================
-# 2. 數據清洗與因子強力對齊
+# 2. 數據清洗與強力對齊 (保留所有因子)
 # ==========================================
 def normalize_factors(df):
-    """識別核心因子，保留原始數據，強制 Close = SP500"""
+    """識別核心因子，Close 強制同步 SP500，保留所有原始數據"""
     if df.empty: return df
     df = df.reset_index()
-    # 統一清理欄位名：去空格、轉大寫
+    # 統一標籤為大寫並去除空白
     df.columns = [str(c).strip().upper() for c in df.columns]
     
     mapping = {
@@ -36,23 +36,23 @@ def normalize_factors(df):
     }
     
     res = pd.DataFrame()
-    # 尋找唯一的日期欄位
+    # 尋找唯一的日期欄位標籤
     date_col = next((c for c in df.columns if any(k in c for k in ['DATE', 'TIME', '日期', 'INDEX'])), None)
     if date_col:
         res['Date_Final'] = pd.to_datetime(df[date_col], errors='coerce')
     
-    # 核心因子識別
+    # 識別核心因子並數值化
     for target_key, kws in mapping.items():
         for col in df.columns:
             if any(kw in col for kw in kws) and target_key not in res.columns:
                 res[target_key] = pd.to_numeric(df[col].astype(str).str.replace(',', '').str.replace('$', ''), errors='coerce')
                 break
     
-    # 【需求實作】Close 參照 SP500 數字，不替代
+    # 強制 Close 與 SP500 數據同步
     if 'SP500' in res.columns: 
         res['Close'] = res['SP500']
     
-    # 保留所有其餘因子欄位
+    # 補回其餘所有未被標記的原始欄位
     for col in df.columns:
         if col not in list(res.columns) + [date_col]:
             res[col] = df[col]
@@ -60,7 +60,7 @@ def normalize_factors(df):
     return res.dropna(subset=['Date_Final'])
 
 def get_web_patch(start_d, end_d):
-    """獲取聯網最新數據作為時間軸補強"""
+    """聯網獲取 VOO/RSP/VIX 數據補強"""
     try:
         spy = yf.Ticker("SPY").history(start=start_d, end=end_d, interval="1wk")
         rsp = yf.Ticker("RSP").history(start=start_d, end=end_d, interval="1wk")
@@ -78,69 +78,72 @@ def get_web_patch(start_d, end_d):
         return pd.DataFrame()
 
 # ==========================================
-# 3. 側邊欄：資金分配與策略參數 (全域定義防 NameError)
+# 3. 側邊欄：全局參數設定 (包含熔斷與 RSI)
 # ==========================================
-st.sidebar.header("💰 1. 1000 萬資產配置邏輯")
+st.sidebar.header("💰 1. 1000 萬資產邏輯")
 TOTAL_CAP = st.sidebar.number_input("總資產預算 (NTD)", value=10000000)
-CASH_RSV = st.sidebar.number_input("現金預備金 (抄底用)", value=2000000)
-DCA_POOL = TOTAL_CAP - CASH_RSV # 800 萬用於 DCA 池
-st.sidebar.info(f"可用於定期定額 (DCA) 資金：{DCA_POOL/10000:.0f} 萬")
+CASH_RSV = st.sidebar.number_input("現金預備金 (MDD 抄底用)", value=2000000)
+DCA_POOL = TOTAL_CAP - CASH_RSV # 800 萬 DCA 池
+base_dca_amt = st.sidebar.number_input("每月基礎 DCA 金額 (NTD)", value=200000)
 
-BASE_DCA = st.sidebar.number_input("基礎月扣基數", value=200000)
+st.sidebar.header("🛡️ 2. 熔斷機制設定 (可調)")
+with st.sidebar.expander("熔斷門檻調整", expanded=True):
+    M_LOSS = st.slider("帳面虧損熔斷比例 (%)", -30, -5, -15) / 100
+    M_SMA = st.number_input("熔斷參考均線 (週)", value=200)
+    M_VIX = st.slider("VIX 恐慌門檻", 20, 60, 40)
 
-st.sidebar.header("🛡️ 2. 自定義熔斷參數")
-M_LOSS = st.sidebar.slider("帳面虧損熔斷 (%)", -30, -5, -15) / 100
-M_SMA = st.sidebar.number_input("均線過濾週期 (週)", value=200)
-M_VIX = st.sidebar.slider("VIX 恐慌熔斷門檻", 20, 60, 40)
+st.sidebar.header("⚙️ 3. RSI 買進訊號設定")
+RSI_P = st.sidebar.number_input("RSI 計算週期 (週)", value=14)
+CONF_W = st.sidebar.slider("訊號連續確認週數", 1, 5, 1)
 
-st.sidebar.header("⚙️ 3. RSI 與加碼規則")
-RSI_P = st.sidebar.number_input("RSI 計算週期", value=14)
-CONF_W = st.sidebar.slider("連續訊號確認週數", 1, 5, 1)
-
-with st.sidebar.expander("加碼階梯設定"):
-    R_SPEED = st.slider("提速 (2x) RSI", 30, 55, 45)
-    R_EXTRA = st.slider("爆買 (4x) RSI", 20, 45, 35)
+with st.sidebar.expander("階梯加碼 RSI 門檻"):
+    R_SPEED = st.slider("提速扣款 (2x) RSI", 30, 55, 45)
+    R_EXTRA = st.slider("超賣爆買 (4x) RSI", 20, 45, 35)
     R_MELT_B = st.slider("熔斷中加碼 RSI", 10, 40, 30)
 
 up_file = st.sidebar.file_uploader("📥 4. 上傳 CSV 資料庫", type=['csv'])
 
 # ==========================================
-# 4. 數據整合流程 (徹底解決 Date 重複與 NameError)
+# 4. 數據整合引擎 (修復 Date 不唯一與 NameError)
 # ==========================================
-if st.sidebar.button("🚀 執行強力數據對齊與策略回測", type="primary"):
+if st.sidebar.button("🚀 執行強力數據對齊與分析", type="primary"):
     web_df = get_web_patch(date(2003, 5, 1), date.today())
     
     if up_file:
         df_csv = normalize_factors(pd.read_csv(up_file))
-        # 強制排重，確保 Date 標籤全球唯一
+        # 解決 Date 不唯一的問題
         df_csv = df_csv.loc[:, ~df_csv.columns.duplicated()].drop_duplicates(subset=['Date_Final'])
         web_df = web_df.drop_duplicates(subset=['Date_Final'])
         
+        # 合併數據並修復 NameError: target
         final = pd.merge(web_df, df_csv, on='Date_Final', how='outer')
-        
-        # 【物理級修復】修正 NameError: target
-        for f in ['SP500', 'SP500EW', 'VIX']:
-            web_c = f"{f}_Web"
-            if web_c in final.columns:
-                if f not in final.columns: final[f] = final[web_c]
-                else: final[f] = final[f].combine_first(final[web_c])
+        for factor_name in ['SP500', 'SP500EW', 'VIX']:
+            web_col = f"{factor_name}_Web"
+            if web_col in final.columns:
+                if factor_name not in final.columns: 
+                    final[factor_name] = final[web_col]
+                else: 
+                    final[factor_name] = final[factor_name].combine_first(final[web_col])
         
         final['Close'] = final['SP500']
-        final = final.drop(columns=[c for c in final.columns if '_Web' in c]).rename(columns={'Date_Final': 'Date'})
+        # 移除 Web 暫存欄位，修復 rename 語法錯誤
+        web_temp_cols = [c for c in final.columns if '_Web' in c]
+        final = final.drop(columns=web_temp_cols).rename(columns={'Date_Final': 'Date'})
     else:
-        final = web_df.rename(columns={'Date_Final': 'Date', 'SP500_Web': 'SP500', 'SP500_Web': 'Close', 'SP500EW_Web': 'SP500EW', 'VIX_Web': 'VIX'})
+        final = web_df.rename(columns={'Date_Final': 'Date', 'SP500_Web': 'SP500', 'SP500EW_Web': 'SP500EW', 'VIX_Web': 'VIX'})
+        final['Close'] = final['SP500']
 
-    # 缺失值沿用前週 (ffill)
+    # 沿用前週數據並排序
     final = final.loc[:, ~final.columns.duplicated()].sort_values('Date').ffill().dropna(subset=['Date', 'Close'])
-    st.session_state['master_state'] = final
+    st.session_state['master_df'] = final
 
 # ==========================================
 # 5. 主介面顯示
 # ==========================================
-if 'master_state' in st.session_state:
-    df = st.session_state['master_state'].copy()
+if 'master_df' in st.session_state:
+    df = st.session_state['master_df'].copy()
     
-    # 計算指標
+    # 計算 RSI 指標
     def get_rsi(s, p=14):
         d = s.diff(); g = d.where(d > 0, 0); l = -d.where(d < 0, 0)
         ag = g.ewm(com=p-1, min_periods=p).mean(); al = l.ewm(com=p-1, min_periods=p).mean()
@@ -154,31 +157,31 @@ if 'master_state' in st.session_state:
     df['E_Sig'] = (df['RSI_V'] < R_EXTRA).rolling(window=CONF_W).sum() == CONF_W
     df['M_Sig'] = (df['RSI_V'] < R_MELT_B).rolling(window=CONF_W).sum() == CONF_W
 
-    tab1, tab2 = st.tabs(["📊 實時監控面板", "⏳ 策略歷史回測"])
+    tab1, tab2 = st.tabs(["📊 即時監控面板", "⏳ 策略歷史回測"])
 
     with tab1:
         latest = df.iloc[-1]
-        st.subheader(f"數據更新日：{latest['Date'].strftime('%Y-%m-%d')}")
+        st.subheader(f"數據基準日：{latest['Date'].strftime('%Y-%m-%d')}")
         cost_in = st.number_input("持倉平均成本 (USD)", value=450.0)
         p_loss_v = (latest['Close'] - cost_in) / cost_in
         is_melt_v = (p_loss_v < M_LOSS) or (latest['Close'] < latest['SMA_V']) or (latest['VIX'] > M_VIX)
         
         c = st.columns(4)
         c[0].metric("最新價格", f"${latest['Close']:.2f}"); c[1].metric("RSI", f"{latest['RSI_V']:.1f}")
-        c[2].metric("VIX", f"{latest['VIX']:.1f}"); c[3].metric("回撤", f"{latest['DD_V']:.1%}")
+        c[2].metric("VIX 指數", f"{latest['VIX']:.1f}"); c[3].metric("距高回撤", f"{latest['DD_V']:.1%}")
 
         safe_divider()
         if is_melt_v:
-            st.error("🔴 目前狀態：熔斷模式啟動 (暫停定期定額)")
-            if latest['M_Sig']: st.warning(f"💡 加碼提醒：RSI < {R_MELT_B}，可投入 {BASE_DCA*2/10000:.0f} 萬")
+            st.error(f"🔴 目前狀態：熔斷中 (虧損<{M_LOSS:.0%} 或 價<SMA{M_SMA} 或 VIX>{M_VIX})")
+            if latest['M_Sig']: st.warning(f"💡 補丁加碼：RSI 低於 {R_MELT_B}，可額外投入 {base_dca_amt*2/10000:.0f} 萬")
         else:
-            if latest['E_Sig']: st.warning(f"🔥 超賣爆買 (每月 {BASE_DCA*4/10000:.0f} 萬)")
-            elif latest['S_Sig']: st.warning(f"🟡 提速扣款 (每月 {BASE_DCA*2/10000:.0f} 萬)")
-            else: st.success(f"🔵 基礎定期定額 (每月 {BASE_DCA/10000:.0f} 萬)")
+            if latest['E_Sig']: st.warning(f"🔥 目前狀態：超賣爆買 (每月 {base_dca_amt*4/10000:.0f} 萬)")
+            elif latest['S_Sig']: st.warning(f"🟡 目前狀態：提速扣款 (每月 {base_dca_amt*2/10000:.0f} 萬)")
+            else: st.success(f"🔵 目前狀態：基礎定期定額 (每月 {base_dca_amt/10000:.0f} 萬)")
         st.dataframe(df.tail(10))
 
     with tab2:
-        st.subheader("1000 萬資產回測報告 (矛與盾 v.s. B&H)")
+        st.subheader("1000 萬資產回測對比 (矛與盾 v.s. B&H)")
         shares, dca_p, rsv_p, curr_m, hist = 0, DCA_POOL, CASH_RSV, -1, []
         bh_sh = TOTAL_CAP / df['Close'].iloc[0]
         f_dict = {'r15': False, 'r25': False, 'r35': False}
@@ -188,20 +191,20 @@ if 'master_state' in st.session_state:
             ac_bt = (TOTAL_CAP - dca_p - rsv_p) / shares if shares > 0 else 0
             loss_bt = (p - ac_bt) / ac_bt if ac_bt > 0 else 0
             
-            # 現金預備金抄底 (15/25/35% 回撤)
+            # 現金預備金抄底 (15/25/35% 規則)
             for trg, k in [(-0.15, 'r15'), (-0.25, 'r25'), (-0.35, 'r35')]:
                 if dd <= trg and not f_dict[k] and rsv_p >= CASH_RSV * 0.3:
                     inv = CASH_RSV * 0.3 if trg > -0.35 else rsv_p
                     shares += inv/p; rsv_p -= inv; f_dict[k] = True
             if dd >= 0: f_dict = {key: False for key in f_dict}
 
-            # 每月階梯式 DCA
+            # 階梯式 DCA
             if row['Date'].month != curr_m:
                 curr_m = row['Date'].month
                 melt_bt = (loss_bt < M_LOSS) or (p < sma) or (v > M_VIX)
                 amt = 0
-                if melt_bt: amt = BASE_DCA * 2 if row['M_Sig'] else 0
-                else: amt = BASE_DCA * 4 if row['E_Sig'] else (BASE_DCA * 2 if row['S_Sig'] else BASE_DCA)
+                if melt_bt: amt = base_dca_amt * 2 if row['M_Sig'] else 0
+                else: amt = base_dca_amt * 4 if row['E_Sig'] else (base_dca_amt * 2 if row['S_Sig'] else base_dca_amt)
                 if amt > 0 and dca_p >= amt: dca_p -= amt; shares += amt/p
             
             hist.append({'Date': row['Date'], 'Strategy': (shares*p)+dca_p+rsv_p, 'BH': bh_sh*p})
@@ -217,7 +220,7 @@ if 'master_state' in st.session_state:
             return [f"{tr:.2%}", f"{ann:.2%}", f"{md:.2%}", f"{sh:.2f}"]
 
         st.table(pd.DataFrame({"指標": ["總報酬率", "年化報酬", "最大回撤", "夏普指數"],
-                              "矛與盾": get_perf(res_v['Strategy'], TOTAL_CAP),
-                              "B&H": get_perf(res_v['BH'], TOTAL_CAP)}))
+                              "矛與盾策略": get_perf(res_v['Strategy'], TOTAL_CAP),
+                              "Buy & Hold": get_perf(res_v['BH'], TOTAL_CAP)}))
 else:
-    st.info("💡 系統已修復報錯！請上傳 CSV 資料庫並點擊「執行強力對齊」啟動分析。")
+    st.info("💡 系統已修復報錯！請上傳 CSV 資料庫並點擊執行按鈕啟動分析。")
