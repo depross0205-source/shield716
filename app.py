@@ -27,20 +27,24 @@ def get_rsi(s, period=14):
 def normalize_factors(df):
     """因子對齊模組：徹底解決時區衝突與欄位吞噬"""
     if df.empty: return df
-    df = df.reset_index()
+    
+    # 防止把預設的流水號 index 變成干擾欄位
+    if isinstance(df.index, pd.DatetimeIndex) or (df.index.name and 'date' in str(df.index.name).lower()):
+        df = df.reset_index()
+        
     df.columns = [str(c).strip().upper() for c in df.columns]
     res = pd.DataFrame()
 
-    # 日期識別與時區剝離 (解決合併崩潰的核心)
-    d_names = ['DATE', 'TIME', '日期', 'INDEX']
+    # 💡 致命錯誤修正 1：移除 'INDEX' 關鍵字，防止流水號被當作 2262 年的日期
+    d_names = ['DATE', 'TIME', '日期', '年月']
     d_col = next((c for c in df.columns if any(k in c for k in d_names)), None)
+    
     if d_col:
-        # 💡 關鍵修正 1：強制轉成字串，防止整數格式被當成 1970 年的奈秒！
         res['Date_Final'] = pd.to_datetime(df[d_col].astype(str).str.strip(), errors='coerce')
         if res['Date_Final'].dt.tz is not None:
             res['Date_Final'] = res['Date_Final'].dt.tz_localize(None)
 
-    # 映射配置 (嚴格順序，優先匹配 SP500EW)
+    # 映射配置 (嚴格順序)
     m = {
         'SP500EW': ['RSP', 'EW', '等權重', 'SP500EW'],
         'SP500': ['SP500', 'VOO', 'PRICE', '收盤', 'CLOSE'],
@@ -65,7 +69,6 @@ def normalize_factors(df):
     if 'SP500' in res.columns:
         res['Close'] = res['SP500']
 
-    # 補回未使用的原始欄位
     for col in df.columns:
         if col not in used_cols and col != d_col:
             res[col] = df[col]
@@ -104,7 +107,7 @@ B_DCA = b_dca_w * 10000
 
 st.sidebar.header("🛡️ 2. 熔斷參數")
 M_LOSS = st.sidebar.slider("虧損熔斷 (%)", -30, -5, -15) / 100
-M_SMA = st.sidebar.number_input("均線週期 (週)", value=50)
+M_SMA = st.sidebar.number_input("均線週期 (週)", value=50) # 預設改為50週
 M_VIX = st.sidebar.slider("VIX 恐慌門檻", 20, 60, 40)
 
 st.sidebar.header("⚙️ 3. 訊號參數")
@@ -137,8 +140,11 @@ if st.sidebar.button("🚀 執行強力數據整合", type="primary"):
             for f in ['SP500', 'VIX']:
                 wc = f + "_Web"
                 if wc in final.columns:
-                    if f not in final.columns: final[f] = final[wc]
-                    else: final[f] = final[f].combine_first(final[wc])
+                    # 💡 致命錯誤修正 2：強制以 Yahoo Finance 聯網價格為準！(覆蓋 CSV 的錯誤價格)
+                    if f in final.columns:
+                        final[f] = final[wc].combine_first(final[f])
+                    else:
+                        final[f] = final[wc]
             
             final['Close'] = final['SP500']
             w_cols = [c for c in final.columns if '_Web' in c]
@@ -192,25 +198,16 @@ with t1:
         if l['RSI'] < R_LV1: st.warning(f"🔥 超賣爆買 ({B_DCA*4/10000:.0f}萬)")
         elif l['RSI'] < R_LV2: st.warning(f"🟡 提速加碼 ({B_DCA*2/10000:.0f}萬)")
         else: st.success(f"🔵 基礎定期定額 ({B_DCA/10000:.0f}萬)")
-    st.dataframe(df.tail(10))
 
 with t2:
     st.subheader("1000 萬資產回測報告")
     
     if st.button("▶️ 開始執行策略回測", key="run_backtest"):
-        st.markdown("### 🐛 系統內部除蟲雷達")
-        st.write(f"👉 **檢查點 1：** 進入回測前的原始資料共 `{len(df)}` 筆")
-        
         bt_df = df.dropna(subset=['Close', 'SMA', 'RSI']).copy()
-        st.write(f"👉 **檢查點 2：** 清理空值 (NaN) 後的有效資料共 `{len(bt_df)}` 筆")
         
         if bt_df.empty:
-            st.error("❌ 清理空值後資料變成 0 筆，請看下方殘留的原始資料長怎樣：")
-            st.dataframe(df.head(10))
+            st.error("❌ 清理空值後資料變成 0 筆，請檢查左側均線設定。")
             st.stop()
-            
-        st.write("👉 **檢查點 3：** 迴圈起點資料預覽（請確認 Date 已非 1970 年，且 Close 不是 0）：")
-        st.dataframe(bt_df[['Date', 'Close', 'SMA', 'RSI', 'DD']].head(3))
 
         try:
             with st.spinner('正在執行 1000 萬資產配置...'):
@@ -257,14 +254,11 @@ with t2:
                     total_val = (sh * p) + d_p + r_p
                     hist.append({'Date': curr_date, 'Strategy': total_val, 'BH': bh_sh * p})
                 
-                st.write(f"👉 **檢查點 4：** 迴圈執行完畢！共記錄了 `{len(hist)}` 天的資產變化。")
-                
                 if len(hist) > 0:
                     res_df = pd.DataFrame(hist).set_index('Date')
                     
-                    # 💡 關鍵修正 2：繪圖防當機補丁
                     if len(res_df.index.unique()) <= 1:
-                        st.error("🚨 圖表緊急煞車：檢測到所有日期都是同一天 (如 1970-01-01)，繪圖會導致瀏覽器崩潰！請重新執行左側資料整合。")
+                        st.error("🚨 偵測到日期格式完全重疊 (如 1970-01-01)，已緊急停止繪圖以防當機！")
                     else:
                         st.line_chart(res_df)
                     
@@ -281,10 +275,9 @@ with t2:
                     st.table(pd.DataFrame({"指標": ["總報酬", "年化報酬", "最大回撤", "夏普值"],
                                            "矛與盾": mtr(res_df['Strategy']), "B&H": mtr(res_df['BH'])}))
                 else:
-                    st.error("❌ 迴圈雖然跑完了，但沒有產出任何歷史紀錄 (hist 為空)。")
+                    st.error("❌ 回測無歷史紀錄。")
         
         except Exception as e:
             st.error(f"❌ 回測運算發生錯誤: {str(e)}")
-            st.code(traceback.format_exc())
 
 st.caption("v9.50 Wall Breaker Edition | 徹底消除時區衝突、NaN 毒藥與自動當機問題")
