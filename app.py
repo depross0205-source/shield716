@@ -3,298 +3,279 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import traceback
-from datetime import date
+from datetime import datetime, date
 
-st.set_page_config(page_title=“mao dun 9.51”, page_icon=“shield”, layout=“wide”)
-st.title(“shield mao dun backtest system”)
-st.caption(“v9.51 fix FRED column mapping + yfinance protection”)
+# ==========================================
+# 1. 系統基礎配置 (防禦性架構)
+# ==========================================
+st.set_page_config(page_title="矛與盾 9.60", page_icon="🛡️", layout="wide")
+st.title("🛡️ 矛與盾 數據精確與穩定回測系統 ⚔️")
 
+# ==========================================
+# 2. 核心運算函數
+# ==========================================
 def get_rsi(s, period=14):
-delta = s.diff()
-gain  = delta.where(delta > 0, 0)
-loss  = -delta.where(delta < 0, 0)
-avg_g = gain.ewm(com=period-1, min_periods=period).mean()
-avg_l = loss.ewm(com=period-1, min_periods=period).mean()
-rs    = avg_g / (avg_l + 1e-9)
-return 100 - (100 / (1 + rs))
+    """計算 RSI 數值，防止除以零崩潰"""
+    delta = s.diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_g = gain.ewm(com=period-1, min_periods=period).mean()
+    avg_l = loss.ewm(com=period-1, min_periods=period).mean()
+    rs = avg_g / (avg_l + 1e-9)
+    return 100 - (100 / (1 + rs))
 
 def normalize_factors(df):
-if df.empty:
-return df
-df = df.reset_index()
-df.columns = [str(c).strip().upper() for c in df.columns]
-res = pd.DataFrame()
+    """因子對齊模組：徹底解決時區衝突與欄位吞噬"""
+    if df.empty: return df
+    
+    if isinstance(df.index, pd.DatetimeIndex) or (df.index.name and 'date' in str(df.index.name).lower()):
+        df = df.reset_index()
+        
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    res = pd.DataFrame()
 
-```
-d_names = ['DATE', 'TIME', 'INDEX']
-d_col   = next((c for c in df.columns if any(k in c for k in d_names)), None)
-if d_col:
-    res['Date_Final'] = pd.to_datetime(df[d_col], errors='coerce')
-    if res['Date_Final'].dt.tz is not None:
-        res['Date_Final'] = res['Date_Final'].dt.tz_localize(None)
+    d_names = ['DATE', 'TIME', '日期', '年月']
+    d_col = next((c for c in df.columns if any(k in c for k in d_names)), None)
+    
+    if d_col:
+        res['Date_Final'] = pd.to_datetime(df[d_col].astype(str).str.strip(), errors='coerce')
+        if res['Date_Final'].dt.tz is not None:
+            res['Date_Final'] = res['Date_Final'].dt.tz_localize(None)
 
-m = {
-    'SP500EW':   ['RSP', 'EW', 'SP500EW'],
-    'SP500':     ['SP500', 'VOO', 'PRICE', 'CLOSE'],
-    'VIX':       ['VIXCLS', 'VIX'],
-    'HY_SPREAD': ['BAMLH0A0HYM2', 'BAML', 'HY_SPREAD', 'SPREAD'],
-    'TIPS_10Y':  ['DFII10', 'DFII', 'TIPS_10Y', 'TIPS'],
-    'CAPE':      ['CAPE']
-}
+    m = {
+        'SP500EW': ['RSP', 'EW', '等權重', 'SP500EW'],
+        'SP500': ['SP500', 'VOO', 'PRICE', '收盤', 'CLOSE', 'GSPC'],
+        'VIX': ['VIX', '恐慌', '^VIX'],
+        'HY_SPREAD': ['SPREAD', 'HY_SPREAD', '利差'],
+        'TIPS_10Y': ['TIPS', 'TIPS_10Y', '實質利率'],
+        'CAPE': ['CAPE', '席勒', '本益比']
+    }
 
-used_cols = set()
-for target, kws in m.items():
+    used_cols = set()
+    for target, kws in m.items():
+        for col in df.columns:
+            if col in used_cols: continue
+            if any(k in col for k in kws) and target not in res.columns:
+                res[target] = pd.to_numeric(
+                    df[col].astype(str).str.replace(',', '').str.replace('$', ''), 
+                    errors='coerce'
+                )
+                used_cols.add(col)
+                break
+
+    if 'SP500' in res.columns:
+        res['Close'] = res['SP500']
+
     for col in df.columns:
-        if col in used_cols:
-            continue
-        if any(k.upper() in col for k in kws) and target not in res.columns:
-            res[target] = pd.to_numeric(
-                df[col].astype(str)
-                       .str.replace(',', '', regex=False)
-                       .str.replace('$', '', regex=False),
-                errors='coerce'
-            )
-            used_cols.add(col)
-            break
+        if col not in used_cols and col != d_col:
+            res[col] = df[col]
 
-if 'SP500' in res.columns:
-    res['Close'] = res['SP500']
-
-for col in df.columns:
-    if col not in used_cols and col != d_col:
-        res[col] = df[col]
-
-if 'Date_Final' in res.columns:
-    return res.dropna(subset=['Date_Final'])
-return pd.DataFrame()
-```
+    return res.dropna(subset=['Date_Final']) if 'Date_Final' in res.columns else pd.DataFrame()
 
 def get_web_data(start_d, end_d):
-try:
-s = yf.Ticker(“SPY”).history(start=start_d, end=end_d, interval=“1wk”)
-v = yf.Ticker(”^VIX”).history(start=start_d, end=end_d, interval=“1wk”)
-if s.empty:
-raise ValueError(“SPY no data”)
-for d in [s, v]:
-if not d.empty and d.index.tz is not None:
-d.index = d.index.tz_localize(None)
-w_df = pd.DataFrame(index=s.index)
-w_df[‘SP500_Web’] = s[‘Close’] * 0.9
-if not v.empty:
-w_df[‘VIX_Web’] = v[‘Close’].reindex(s.index).ffill()
-w_df.index.name = ‘Date_Final’
-return w_df.reset_index()
-except Exception as e:
-st.warning(“yfinance failed: “ + str(e))
-return pd.DataFrame()
+    """獲取聯網補丁，改為抓取 ^GSPC (標普500指數) 避免與 CSV 尺度衝突"""
+    try:
+        # 💡 關鍵修復：統一使用 S&P 500 原始指數，避免 10 倍的尺度落差
+        s = yf.Ticker("^GSPC").history(start=start_d, end=end_d, interval="1wk")
+        v = yf.Ticker("^VIX").history(start=start_d, end=end_d, interval="1wk")
+        for d in [s, v]:
+            if not d.empty: d.index = d.index.tz_localize(None)
+        w_df = pd.DataFrame(index=s.index)
+        w_df['SP500_Web'] = s['Close'] 
+        w_df['VIX_Web'] = v['Close']
+        w_df.index.name = 'Date_Final'
+        return w_df.reset_index()
+    except Exception as e:
+        st.warning(f"聯網補強異常: {str(e)}")
+        return pd.DataFrame()
 
-st.sidebar.header(“1. Capital (10M NTD model)”)
-T_W    = st.sidebar.number_input(“Total (wan NTD)”, value=1000)
-T_CAP  = T_W * 10000
-C_W    = st.sidebar.number_input(“Reserve (wan NTD)”, value=200)
-C_RSV  = C_W * 10000
+# ==========================================
+# 3. 側邊欄：資金分配與參數
+# ==========================================
+st.sidebar.header("💰 1. 資產分配 (1000萬模型)")
+T_W = st.sidebar.number_input("總資產 (萬 NTD)", value=1000)
+T_CAP = T_W * 10000
+
+C_W = st.sidebar.number_input("預備金 (萬 NTD)", value=200)
+C_RSV = C_W * 10000
+
 D_POOL = T_CAP - C_RSV
-b_dca_w = st.sidebar.number_input(“Monthly DCA base (wan NTD)”, value=20)
-B_DCA  = b_dca_w * 10000
+b_dca_w = st.sidebar.number_input("月 DCA 基數 (萬 NTD)", value=20)
+B_DCA = b_dca_w * 10000
 
-st.sidebar.header(“2. Circuit Breaker”)
-M_LOSS = st.sidebar.slider(“Loss breaker (%)”, -30, -5, -15) / 100
-M_SMA  = st.sidebar.number_input(“SMA period (weeks)”, value=200)
-M_VIX  = st.sidebar.slider(“VIX panic threshold”, 20, 60, 40)
+st.sidebar.header("🛡️ 2. 熔斷參數")
+M_LOSS = st.sidebar.slider("虧損熔斷 (%)", -30, -5, -15) / 100
+M_SMA = st.sidebar.number_input("均線週期 (週)", value=50)
+M_VIX = st.sidebar.slider("VIX 恐慌門檻", 20, 60, 40)
 
-st.sidebar.header(“3. Signal params”)
-R_P   = st.sidebar.number_input(“RSI period”, value=14)
-R_LV1 = st.sidebar.slider(“Oversold RSI 4x”, 20, 45, 35)
-R_LV2 = st.sidebar.slider(“Boost RSI 2x”, 30, 55, 45)
+st.sidebar.header("⚙️ 3. 訊號參數")
+R_P = st.sidebar.number_input("RSI 週期", value=14)
+R_LV1 = st.sidebar.slider("爆買 RSI (4x)", 20, 45, 35)
+R_LV2 = st.sidebar.slider("加碼 RSI (2x)", 30, 55, 45)
 
-st.sidebar.markdown(”—”)
-st.sidebar.header(“4. Upload CSV”)
-st.sidebar.caption(“FRED columns: SP500, VIXCLS, BAMLH0A0HYM2, DFII10”)
-up_file = st.sidebar.file_uploader(“Choose CSV”, type=[‘csv’])
+up_file = st.sidebar.file_uploader("📥 4. 上傳 CSV", type=['csv'])
 
-if st.sidebar.button(“Run Data Integration”, type=“primary”):
-try:
-with st.spinner(“Fetching yfinance data…”):
-web_df = get_web_data(date(2003, 5, 1), date.today())
-
-```
-    if up_file:
-        up_file.seek(0)
-        df_csv = normalize_factors(pd.read_csv(up_file))
-        if df_csv.empty:
-            raise ValueError("CSV empty after normalization. Check date column format YYYY-MM-DD.")
-
-        df_csv = df_csv.loc[:, ~df_csv.columns.duplicated()].copy()
-        df_csv = df_csv.drop_duplicates(subset=['Date_Final'])
-
-        mapped_cols = [c for c in ['SP500','VIX','HY_SPREAD','TIPS_10Y','CAPE'] if c in df_csv.columns]
-        st.sidebar.success("Mapped: " + str(mapped_cols))
-
-        if not web_df.empty:
-            web_df = web_df.drop_duplicates(subset=['Date_Final'])
-            final  = pd.merge(web_df, df_csv, on='Date_Final', how='outer')
+# ==========================================
+# 4. 數據對齊模組
+# ==========================================
+if st.sidebar.button("🚀 執行強力數據整合", type="primary"):
+    try:
+        web_df = get_web_data(date(2003, 5, 1), date.today())
+        if up_file:
+            up_file.seek(0)
+            df_csv = normalize_factors(pd.read_csv(up_file))
+            if df_csv.empty: raise ValueError("CSV 對齊後為空，請檢查日期格式。")
+            
+            df_csv = df_csv.loc[:, ~df_csv.columns.duplicated()].copy()
+            df_csv = df_csv.drop_duplicates(subset=['Date_Final'])
+            
+            if not web_df.empty:
+                web_df = web_df.drop_duplicates(subset=['Date_Final'])
+                final = pd.merge(web_df, df_csv, on='Date_Final', how='outer')
+            else:
+                final = df_csv
+                
+            for f in ['SP500', 'VIX']:
+                wc = f + "_Web"
+                if wc in final.columns:
+                    if f in final.columns:
+                        final[f] = final[wc].combine_first(final[f])
+                    else:
+                        final[f] = final[wc]
+            
+            final['Close'] = final['SP500']
+            w_cols = [c for c in final.columns if '_Web' in c]
+            final = final.drop(columns=w_cols)
+            
+            rn_dict = {'Date_Final': 'Date'}
+            final = final.rename(columns=rn_dict)
         else:
-            final  = df_csv
+            if web_df.empty: raise ValueError("無網路數據且未上傳CSV。")
+            final = web_df.rename(columns={'Date_Final': 'Date', 'SP500_Web': 'SP500', 'VIX_Web': 'VIX'})
+            final['Close'] = final['SP500']
+        
+        final = final.copy().sort_values('Date').ffill()
+        st.session_state['master_df'] = final.dropna(subset=['Date', 'Close'])
+        st.success(f"✅ 數據載入成功！共 {len(st.session_state['master_df'])} 筆資料。")
+    except Exception as e:
+        st.error(f"❌ 整合失敗: {str(e)}")
+        st.code(traceback.format_exc())
 
-        for f in ['SP500', 'VIX']:
-            wc = f + "_Web"
-            if wc in final.columns:
-                if f not in final.columns:
-                    final[f] = final[wc]
-                else:
-                    final[f] = final[f].combine_first(final[wc])
+# ==========================================
+# 5. 主面板：監控與回測
+# ==========================================
+if 'master_df' not in st.session_state:
+    st.info("💡 請上傳數據後，點擊左側「執行強力數據整合」啟動分析")
+    st.stop()
 
-        final['Close'] = final['SP500']
-        w_cols = [c for c in final.columns if '_Web' in c]
-        final  = final.drop(columns=w_cols)
-        final  = final.rename(columns={'Date_Final': 'Date'})
+df = st.session_state['master_df'].copy()
+df['RSI'] = get_rsi(df['Close'], R_P)
+df['SMA'] = df['Close'].rolling(window=M_SMA, min_periods=1).mean()
+# 確保資料按日期排序後再計算最大回撤
+df = df.sort_values('Date')
+df['DD'] = (df['Close'] - df['Close'].rolling(window=52, min_periods=1).max()) / df['Close'].rolling(window=52, min_periods=1).max()
 
-    elif not web_df.empty:
-        final = web_df.rename(columns={
-            'Date_Final': 'Date', 'SP500_Web': 'SP500', 'VIX_Web': 'VIX'
-        })
-        final['Close'] = final['SP500']
-    else:
-        raise ValueError("No data: yfinance failed and no CSV uploaded.")
-
-    if 'Close' not in final.columns:
-        raise ValueError("No price column found. Current columns: " + str(list(final.columns)))
-
-    final = final.sort_values('Date').ffill()
-    final = final.dropna(subset=['Date', 'Close'])
-    st.session_state['master_df'] = final
-    st.success("Loaded " + str(len(final)) + " rows.")
-
-except Exception as e:
-    st.error("Integration failed: " + str(e))
-    st.code(traceback.format_exc())
-```
-
-if ‘master_df’ not in st.session_state:
-st.info(“Upload CSV then click Run Data Integration.”)
-with st.expander(“CSV column reference”):
-st.markdown(”| FRED series | Also accepted | Maps to |\n|—|—|—|\n| SP500 | VOO, PRICE, CLOSE | Close |\n| VIXCLS | VIX | VIX |\n| BAMLH0A0HYM2 | BAML*, HY_SPREAD | HY_SPREAD |\n| DFII10 | DFII*, TIPS | TIPS_10Y |\n| - | CAPE | CAPE |”)
-st.stop()
-
-df = st.session_state[‘master_df’].copy()
-df[‘RSI’] = get_rsi(df[‘Close’], R_P)
-df[‘SMA’] = df[‘Close’].rolling(window=M_SMA, min_periods=1).mean()
-df[‘DD’]  = (
-(df[‘Close’] - df[‘Close’].rolling(52, min_periods=1).max())
-/ df[‘Close’].rolling(52, min_periods=1).max()
-)
-
-t1, t2 = st.tabs([“Monitor”, “Backtest”])
+t1, t2 = st.tabs(["📊 即時監控", "⏳ 歷史回測"])
 
 with t1:
-l = df.iloc[-1]
-st.subheader(“Latest: “ + str(pd.Timestamp(l[‘Date’]).strftime(’%Y-%m-%d’)))
-c = st.columns(4)
-c[0].metric(“Price”,     “$” + f”{l[‘Close’]:.2f}”)
-c[1].metric(“RSI”,       f”{l[‘RSI’]:.1f}”)
-vix_val = float(l[‘VIX’]) if ‘VIX’ in l.index and not pd.isna(l.get(‘VIX’, float(‘nan’))) else 0.0
-c[2].metric(“VIX”,       f”{vix_val:.1f}”)
-c[3].metric(“DD 52w”,    f”{l[‘DD’]:.1%}”)
+    l = df.iloc[-1]
+    st.subheader(f"基準日: {l['Date'].strftime('%Y-%m-%d')}")
+    c = st.columns(4)
+    # UI 提示改為 S&P 500 指數，避免 VOO 價格認知混淆
+    c[0].metric("S&P 500 指數", f"{l['Close']:.2f}")
+    c[1].metric("RSI", f"{l['RSI']:.1f}")
+    c[2].metric("VIX", f"{l.get('VIX', 0):.1f}")
+    c[3].metric("回撤 (52週)", f"{l['DD']:.1%}")
 
-```
-st.markdown("---")
-cost = st.number_input("Cost basis ($)", value=450.0)
-loss = (l['Close'] - cost) / cost if cost > 0 else 0
-is_m = loss < M_LOSS or l['Close'] < l['SMA'] or vix_val > M_VIX
+    st.markdown("---")
+    cost = st.number_input("持倉成本 (對應指數點位)", value=float(l['Close'] * 0.9))
+    loss = (l['Close'] - cost) / cost if cost > 0 else 0
+    
+    is_m = loss < M_LOSS or l['Close'] < l['SMA'] or l.get('VIX', 0) > M_VIX
 
-if is_m:
-    st.error("CIRCUIT BREAKER ACTIVE")
-else:
-    if   l['RSI'] < R_LV1: st.warning("OVERSOLD 4x DCA: " + str(B_DCA*4//10000) + " wan")
-    elif l['RSI'] < R_LV2: st.warning("BOOST 2x DCA: " + str(B_DCA*2//10000) + " wan")
-    else:                   st.success("Normal DCA: " + str(B_DCA//10000) + " wan")
-
-with st.expander("Loaded columns"):
-    st.write(list(df.columns))
-st.dataframe(df.tail(10))
-```
+    if is_m: st.error("🔴 熔斷模式啟動 (暫停扣款)")
+    else:
+        if l['RSI'] < R_LV1: st.warning(f"🔥 超賣爆買 ({B_DCA*4/10000:.0f}萬)")
+        elif l['RSI'] < R_LV2: st.warning(f"🟡 提提速加碼 ({B_DCA*2/10000:.0f}萬)")
+        else: st.success(f"🔵 基礎定期定額 ({B_DCA/10000:.0f}萬)")
 
 with t2:
-st.subheader(“10M Capital Backtest”)
+    st.subheader("1000 萬資產回測報告 (全自動即時運算)")
+    
+    # 💡 關鍵修復：拔掉 st.button，讓回測引擎自動執行，徹底解決「按了沒反應」的 Bug
+    bt_df = df.dropna(subset=['Close', 'SMA', 'RSI']).copy()
+    
+    if bt_df.empty:
+        st.error("❌ 清理空值後資料變成 0 筆，請檢查左側均線設定。")
+    else:
+        sh, d_p, r_p, c_m, hist = 0.0, D_POOL, C_RSV, -1, []
+        
+        first_p = float(bt_df['Close'].iloc[0])
+        bh_sh = T_CAP / first_p if first_p > 0 else 0
+        
+        flags = {'r15': False, 'r25': False, 'r35': False}
 
-```
-if st.button("Run Backtest", key="run_backtest"):
-    try:
-        with st.spinner("Computing..."):
-            sh, d_p, r_p, c_m, hist = 0, D_POOL, C_RSV, -1, []
-            first_price = df['Close'].iloc[0]
-            bh_sh = T_CAP / first_price if first_price > 0 else 0
-            flags = {'r15': False, 'r25': False, 'r35': False}
+        for _, row in bt_df.iterrows():
+            p = float(row['Close'])
+            dd = float(row['DD'])
+            rsi = float(row['RSI'])
+            sma = float(row['SMA'])
+            vix = float(row.get('VIX', 0))
+            
+            for tr, k in [(-0.15, 'r15'), (-0.25, 'r25'), (-0.35, 'r35')]:
+                if dd <= tr and not flags[k] and r_p > 0:
+                    inv_amt = C_RSV * 0.33 
+                    actual_inv = min(inv_amt, r_p)
+                    sh += actual_inv / p
+                    r_p -= actual_inv
+                    flags[k] = True
+            
+            if dd >= -0.05: 
+                for k in flags: flags[k] = False
+            
+            curr_date = row['Date']
+            if curr_date.month != c_m:
+                c_m = curr_date.month
+                is_melted = (p < sma) or (vix > M_VIX)
+                
+                if not is_melted:
+                    if rsi < R_LV1: amt = B_DCA * 4
+                    elif rsi < R_LV2: amt = B_DCA * 2
+                    else: amt = B_DCA
+                    
+                    actual_dca = min(amt, d_p)
+                    if actual_dca > 0:
+                        sh += actual_dca / p
+                        d_p -= actual_dca
+            
+            total_val = (sh * p) + d_p + r_p
+            hist.append({'Date': curr_date, 'Strategy': total_val, 'BH': bh_sh * p})
+        
+        if len(hist) > 0:
+            res_df = pd.DataFrame(hist).set_index('Date')
+            
+            if len(res_df.index.unique()) <= 1:
+                st.error("🚨 偵測到日期格式異常，請重新點擊左側「數據整合」按鈕！")
+            else:
+                st.line_chart(res_df)
+            
+            def mtr(v):
+                if v.empty: return ["0%", "0%", "0%", "0.00"]
+                tr = (v.iloc[-1] - T_CAP) / T_CAP if T_CAP > 0 else 0
+                y = max(len(v) / 52.0, 1.0)
+                cagr = (v.iloc[-1] / T_CAP) ** (1 / y) - 1 if T_CAP > 0 else 0
+                mdd = ((v - v.cummax()) / v.cummax()).min()
+                # 靜默處理 Pandas 警告，保持畫面乾淨
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", FutureWarning)
+                    rets = v.pct_change(fill_method=None).dropna()
+                shrp = (cagr - 0.02) / (rets.std() * np.sqrt(52)) if not rets.empty and rets.std() > 0 else 0
+                return [f"{tr:.2%}", f"{cagr:.2%}", f"{mdd:.2%}", f"{shrp:.2f}"]
+            
+            st.table(pd.DataFrame({"指標": ["總報酬", "年化報酬", "最大回撤", "夏普值"],
+                                   "矛與盾": mtr(res_df['Strategy']), "B&H": mtr(res_df['BH'])}))
+        else:
+            st.error("❌ 運算完畢但無歷史紀錄產生。")
 
-            for _, row in df.iterrows():
-                p  = row['Close']
-                dd = row['DD']
-                if not np.isfinite(p) or p <= 0:
-                    continue
-
-                ac   = (T_CAP - d_p - r_p) / sh if sh > 0 else 0
-                l_bt = (p - ac) / ac              if ac > 0 else 0
-
-                for tr, k in [(-0.15,'r15'), (-0.25,'r25'), (-0.35,'r35')]:
-                    if dd <= tr and not flags[k] and r_p >= C_RSV * 0.3:
-                        inv = C_RSV * 0.3 if tr > -0.35 else r_p
-                        sh += inv / p
-                        r_p -= inv
-                        flags[k] = True
-                if dd >= -0.001:
-                    flags = {k: False for k in flags}
-
-                row_date = pd.Timestamp(row['Date'])
-                if row_date.month != c_m:
-                    c_m   = row_date.month
-                    v_val = float(row.get('VIX', 0) or 0)
-                    if not np.isfinite(v_val):
-                        v_val = 0.0
-                    melt = l_bt < M_LOSS or p < row['SMA'] or v_val > M_VIX
-                    amt  = 0
-                    if not melt:
-                        if   row['RSI'] < R_LV1: amt = B_DCA * 4
-                        elif row['RSI'] < R_LV2: amt = B_DCA * 2
-                        else:                     amt = B_DCA
-                    if amt > 0 and d_p >= amt:
-                        d_p -= amt
-                        sh  += amt / p
-
-                hist.append({
-                    'Date':     row_date,
-                    'Strategy': sh * p + d_p + r_p,
-                    'BH':       bh_sh * p
-                })
-
-        if not hist:
-            st.error("No backtest data. Check Close column.")
-            st.stop()
-
-        res = pd.DataFrame(hist).set_index('Date')
-        st.line_chart(res)
-
-        def mtr(v):
-            if v.empty or v.iloc[0] <= 0:
-                return ['N/A','N/A','N/A','N/A']
-            tr   = (v.iloc[-1] - T_CAP) / T_CAP
-            y    = max(len(v) / 52.0, 1.0)
-            cagr = (v.iloc[-1] / T_CAP) ** (1/y) - 1
-            cum  = v.cummax().replace(0, np.nan)
-            mdd  = ((v - cum) / cum).min()
-            rets = v.pct_change(fill_method=None).dropna()
-            shrp = ((cagr - 0.02) / (rets.std() * np.sqrt(52))
-                    if not rets.empty and rets.std() > 0 else 0)
-            return [f"{tr:.2%}", f"{cagr:.2%}", f"{mdd:.2%}", f"{shrp:.2f}"]
-
-        st.table(pd.DataFrame({
-            'Metric':   ['Total Return','CAGR','Max Drawdown','Sharpe'],
-            'Strategy': mtr(res['Strategy']),
-            'BH':       mtr(res['BH'])
-        }))
-
-    except Exception as e:
-        st.error("Backtest error: " + str(e))
-        st.code(traceback.format_exc())
-```
-
-st.caption(“v9.51 | fix FRED VIXCLS/BAMLH0A0HYM2/DFII10 mapping + yfinance guard”)
+st.caption("v9.60 Wall Breaker Edition | 修正尺度撕裂、全自動無按鈕回測")
