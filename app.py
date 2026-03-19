@@ -103,7 +103,7 @@ B_DCA = b_dca_w * 10000
 
 st.sidebar.header("🛡️ 2. 熔斷參數")
 M_LOSS = st.sidebar.slider("虧損熔斷 (%)", -30, -5, -15) / 100
-M_SMA = st.sidebar.number_input("均線週期 (週)", value=200)
+M_SMA = st.sidebar.number_input("均線週期 (週)", value=50) # 先幫你預設50週方便測試
 M_VIX = st.sidebar.slider("VIX 恐慌門檻", 20, 60, 40)
 
 st.sidebar.header("⚙️ 3. 訊號參數")
@@ -120,7 +120,7 @@ if st.sidebar.button("🚀 執行強力數據整合", type="primary"):
     try:
         web_df = get_web_data(date(2003, 5, 1), date.today())
         if up_file:
-            up_file.seek(0) # 物理級防護：重置指標防止讀到空檔
+            up_file.seek(0)
             df_csv = normalize_factors(pd.read_csv(up_file))
             if df_csv.empty: raise ValueError("CSV 對齊後為空，請檢查日期格式。")
             
@@ -167,7 +167,6 @@ if 'master_df' not in st.session_state:
 df = st.session_state['master_df'].copy()
 df['RSI'] = get_rsi(df['Close'], R_P)
 df['SMA'] = df['Close'].rolling(window=M_SMA, min_periods=1).mean()
-# 52 週滾動最大回撤精確算法
 df['DD'] = (df['Close'] - df['Close'].rolling(window=52, min_periods=1).max()) / df['Close'].rolling(window=52, min_periods=1).max()
 
 t1, t2 = st.tabs(["📊 即時監控", "⏳ 歷史回測"])
@@ -194,29 +193,31 @@ with t1:
         else: st.success(f"🔵 基礎定期定額 ({B_DCA/10000:.0f}萬)")
     st.dataframe(df.tail(10))
 
+# --- 🐛 除蟲雷達版本的回測區塊 ---
 with t2:
     st.subheader("1000 萬資產回測報告")
     
     if st.button("▶️ 開始執行策略回測", key="run_backtest"):
-        # 數據預處理：確保回測開始前沒有遺失值，這是解決跑不出數據的關鍵！
+        st.markdown("### 🐛 系統內部除蟲雷達")
+        st.write(f"👉 **檢查點 1：** 進入回測前的原始資料共 `{len(df)}` 筆")
+        
         bt_df = df.dropna(subset=['Close', 'SMA', 'RSI']).copy()
+        st.write(f"👉 **檢查點 2：** 清理空值 (NaN) 後的有效資料共 `{len(bt_df)}` 筆")
         
         if bt_df.empty:
-            st.error("❌ 數據不足：SMA 或 RSI 計算尚無足夠數據（請檢查均線週期是否過長）。")
+            st.error("❌ 抓到兇手了！清理空值後資料變成 0 筆，請看下方殘留的原始資料長怎樣：")
+            st.dataframe(df.head(10))
             st.stop()
+            
+        st.write("👉 **檢查點 3：** 迴圈起點資料預覽（請確認 Close 價格不是 0 且沒有異常的 NaN）：")
+        st.dataframe(bt_df[['Date', 'Close', 'SMA', 'RSI', 'DD']].head(3))
 
         try:
             with st.spinner('正在執行 1000 萬資產配置...'):
-                # 初始化變數
-                sh = 0.0          # 持股數
-                d_p = D_POOL      # 剩餘可支配資金池 (DCA 用)
-                r_p = C_RSV       # 預備金 (抄底用)
-                c_m = -1          # 月份追蹤
-                hist = []
+                sh, d_p, r_p, c_m, hist = 0.0, D_POOL, C_RSV, -1, []
                 
-                # B&H 基準：第一天全倉買入
-                first_p = bt_df['Close'].iloc[0]
-                bh_sh = T_CAP / first_p
+                first_p = float(bt_df['Close'].iloc[0])
+                bh_sh = T_CAP / first_p if first_p > 0 else 0
                 
                 flags = {'r15': False, 'r25': False, 'r35': False}
 
@@ -227,61 +228,55 @@ with t2:
                     sma = float(row['SMA'])
                     vix = float(row.get('VIX', 0))
                     
-                    # 1. 預備金抄底邏輯 (基於 52 週回撤)
                     for tr, k in [(-0.15, 'r15'), (-0.25, 'r25'), (-0.35, 'r35')]:
                         if dd <= tr and not flags[k] and r_p > 0:
-                            # 每次投入預備金的 1/3
                             inv_amt = C_RSV * 0.33 
                             actual_inv = min(inv_amt, r_p)
                             sh += actual_inv / p
                             r_p -= actual_inv
                             flags[k] = True
                     
-                    # 回撤修復時重置 flag (放寬至 -0.05，避免鎖死)
                     if dd >= -0.05: 
                         for k in flags: flags[k] = False
                     
-                    # 2. 定期定額 (DCA) 邏輯 - 每月執行一次
                     curr_date = row['Date']
                     if curr_date.month != c_m:
                         c_m = curr_date.month
-                        
-                        # 熔斷判斷：只要符合任一條件就不買
                         is_melted = (p < sma) or (vix > M_VIX)
                         
                         if not is_melted:
-                            # 決定本次 DCA 金額
                             if rsi < R_LV1: amt = B_DCA * 4
                             elif rsi < R_LV2: amt = B_DCA * 2
                             else: amt = B_DCA
                             
-                            # 從資金池扣款
                             actual_dca = min(amt, d_p)
                             if actual_dca > 0:
                                 sh += actual_dca / p
                                 d_p -= actual_dca
                     
-                    # 3. 記錄每日價值
                     total_val = (sh * p) + d_p + r_p
                     hist.append({'Date': curr_date, 'Strategy': total_val, 'BH': bh_sh * p})
                 
-                # 轉為 DataFrame 繪圖
-                res_df = pd.DataFrame(hist).set_index('Date')
-                st.line_chart(res_df)
+                st.write(f"👉 **檢查點 4：** 迴圈執行完畢！共記錄了 `{len(hist)}` 天的資產變化。")
                 
-                # --- 績效指標計算 ---
-                def mtr(v):
-                    if v.empty: return ["0%", "0%", "0%", "0.00"]
-                    tr = (v.iloc[-1] - T_CAP) / T_CAP if T_CAP > 0 else 0
-                    y = max(len(v) / 52.0, 1.0) # 預設你抓的週資料
-                    cagr = (v.iloc[-1] / T_CAP) ** (1 / y) - 1 if T_CAP > 0 else 0
-                    mdd = ((v - v.cummax()) / v.cummax()).min()
-                    rets = v.pct_change(fill_method=None).dropna()
-                    shrp = (cagr - 0.02) / (rets.std() * np.sqrt(52)) if not rets.empty and rets.std() > 0 else 0
-                    return [f"{tr:.2%}", f"{cagr:.2%}", f"{mdd:.2%}", f"{shrp:.2f}"]
-                
-                st.table(pd.DataFrame({"指標": ["總報酬", "年化報酬", "最大回撤", "夏普值"],
-                                       "矛與盾": mtr(res_df['Strategy']), "B&H": mtr(res_df['BH'])}))
+                if len(hist) > 0:
+                    res_df = pd.DataFrame(hist).set_index('Date')
+                    st.line_chart(res_df)
+                    
+                    def mtr(v):
+                        if v.empty: return ["0%", "0%", "0%", "0.00"]
+                        tr = (v.iloc[-1] - T_CAP) / T_CAP if T_CAP > 0 else 0
+                        y = max(len(v) / 52.0, 1.0)
+                        cagr = (v.iloc[-1] / T_CAP) ** (1 / y) - 1 if T_CAP > 0 else 0
+                        mdd = ((v - v.cummax()) / v.cummax()).min()
+                        rets = v.pct_change(fill_method=None).dropna()
+                        shrp = (cagr - 0.02) / (rets.std() * np.sqrt(52)) if not rets.empty and rets.std() > 0 else 0
+                        return [f"{tr:.2%}", f"{cagr:.2%}", f"{mdd:.2%}", f"{shrp:.2f}"]
+                    
+                    st.table(pd.DataFrame({"指標": ["總報酬", "年化報酬", "最大回撤", "夏普值"],
+                                           "矛與盾": mtr(res_df['Strategy']), "B&H": mtr(res_df['BH'])}))
+                else:
+                    st.error("❌ 迴圈雖然跑完了，但沒有產出任何歷史紀錄 (hist 為空)。")
         
         except Exception as e:
             st.error(f"❌ 回測運算發生錯誤: {str(e)}")
