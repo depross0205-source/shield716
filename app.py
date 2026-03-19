@@ -13,7 +13,7 @@ st.set_page_config(page_title="矛與盾 7.16 系統", page_icon="🛡️", layo
 st.title("🛡️ 矛與盾 7.16 整合系統 ⚔️")
 
 # ==========================================
-# 共用技術指標函數
+# 共用技術指標函數 (加入 min_periods 防呆)
 # ==========================================
 def calculate_rsi(data, periods=14):
     delta = data.diff()
@@ -25,61 +25,72 @@ def calculate_rsi(data, periods=14):
     return 100 - (100 / (1 + rs))
 
 def process_market_data(df):
+    if df.empty: return df
     df['RSI_14'] = calculate_rsi(df['Close'], periods=14)
-    df['200_SMA'] = df['Close'].rolling(window=200).mean()
-    df['52W_High'] = df['Close'].rolling(window=52).max()
+    # min_periods=1 確保資料即使不到 200 週也不會產生一堆空值而被刪除
+    df['200_SMA'] = df['Close'].rolling(window=200, min_periods=1).mean()
+    df['52W_High'] = df['Close'].rolling(window=52, min_periods=1).max()
     df['Drawdown'] = (df['Close'] - df['52W_High']) / df['52W_High']
-    return df.dropna()
+    # 只針對收盤價與 RSI 過濾空值
+    return df.dropna(subset=['Close', 'RSI_14'])
 
 # ==========================================
-# 數據引擎中心 (側邊欄 / 頂部選單)
+# 數據引擎中心
 # ==========================================
 st.sidebar.header("🗄️ 數據引擎中心")
-st.sidebar.info("💡 邏輯：上傳歷史 CSV，系統將自動比對最後日期，並聯網抓取最新報價進行無縫拼接，確保數據量體最大化。")
+st.sidebar.info("💡 邏輯：上傳歷史 CSV，系統將自動比對最後日期，並聯網抓取最新報價進行無縫拼接。")
 
 uploaded_file = st.sidebar.file_uploader("上傳歷史數據 (可選，需含 Close 欄位)", type=['csv'])
 
 if st.sidebar.button("🔄 載入並聯網拼接全量數據庫", type="primary"):
     with st.spinner("整合歷史與最新數據中..."):
         df_csv = pd.DataFrame()
-        start_date = "2015-01-01" # 預設起始日
+        start_date = "2015-01-01" 
         
         # 1. 處理手動上傳的歷史數據
         if uploaded_file is not None:
-            df_csv = pd.read_csv(uploaded_file, index_col=0, parse_dates=True)
-            if 'Close' in df_csv.columns:
-                if 'VIX' not in df_csv.columns:
-                    df_csv['VIX'] = 20.0 # 若無 VIX 給予預設安全值
+            try:
+                df_csv = pd.read_csv(uploaded_file, index_col=0, parse_dates=True)
+                if 'Close' in df_csv.columns:
+                    if 'VIX' not in df_csv.columns:
+                        df_csv['VIX'] = 20.0 
+                    last_date = df_csv.index.max()
+                    if pd.notnull(last_date):
+                        start_date = (last_date - pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+                else:
+                    st.sidebar.error("CSV 檔案必須包含 'Close' 欄位！")
+            except Exception as e:
+                st.sidebar.error(f"CSV 讀取失敗: {e}")
                 
-                # 找出歷史數據最後一天，往前推7天(避免週線切割誤差)作為爬蟲起點
-                last_date = df_csv.index.max()
-                start_date = (last_date - pd.Timedelta(days=7)).strftime('%Y-%m-%d')
-            else:
-                st.sidebar.error("CSV 檔案必須包含 'Close' 欄位！")
-                
-        # 2. 自動爬蟲抓取最新數據
-        voo = yf.download("VOO", start=start_date, interval="1wk", progress=False)
-        vix = yf.download("^VIX", start=start_date, interval="1wk", progress=False)
-        
-        if isinstance(voo.columns, pd.MultiIndex):
-            voo.columns = voo.columns.droplevel(1)
-            vix.columns = vix.columns.droplevel(1)
+        # 2. 自動爬蟲抓取最新數據 (加入錯誤攔截)
+        try:
+            voo = yf.download("VOO", start=start_date, interval="1wk", progress=False)
+            vix = yf.download("^VIX", start=start_date, interval="1wk", progress=False)
             
-        df_yf = pd.DataFrame({'Close': voo['Close'], 'VIX': vix['Close']}).dropna()
+            if isinstance(voo.columns, pd.MultiIndex):
+                voo.columns = voo.columns.droplevel(1)
+            if isinstance(vix.columns, pd.MultiIndex):
+                vix.columns = vix.columns.droplevel(1)
+                
+            df_yf = pd.DataFrame({'Close': voo['Close'], 'VIX': vix['Close']}).dropna()
+        except Exception as e:
+            st.sidebar.error(f"Yahoo Finance 網路獲取失敗，請稍後重試。錯誤碼: {e}")
+            df_yf = pd.DataFrame()
         
         # 3. 數據無縫拼接
         if not df_csv.empty and 'Close' in df_csv.columns:
-            # 將 CSV 與 YF 數據上下合併
             combined = pd.concat([df_csv[['Close', 'VIX']], df_yf])
-            # 移除重複的日期，保留最新的 (YF) 數據
             combined = combined[~combined.index.duplicated(keep='last')]
             combined = combined.sort_index()
         else:
             combined = df_yf
             
-        # 4. 運算所有技術指標並存入記憶體
-        st.session_state['master_data'] = process_market_data(combined)
-        st.sidebar.success(f"✅ 數據庫就緒！總計包含 {len(st.session_state['master_data'])} 筆週線資料。")
+        # 4. 寫入記憶體
+        if combined.empty:
+            st.sidebar.error("⚠️ 最終合併的數據庫為空！請檢查網路連線或上傳的 CSV 內容。")
+        else:
+            st.session_state['master_data'] = process_market_data(combined)
+            st.sidebar.success(f"✅ 數據庫就緒！總計包含 {len(st.session_state['master_data'])} 筆週線資料。")
 
 # ==========================================
 # 介面分頁設定
@@ -95,6 +106,8 @@ with tab1:
     
     if 'master_data' not in st.session_state:
         st.warning("👈 請先從左側選單點擊「載入並聯網拼接全量數據庫」")
+    elif st.session_state['master_data'].empty:
+        st.error("⚠️ 系統沒有可用數據，請重新載入。")
     else:
         df_live = st.session_state['master_data']
         latest = df_live.iloc[-1]
@@ -113,8 +126,8 @@ with tab1:
         
         st.divider()
         
-        # 邏輯判斷
-        is_meltdown = portfolio_loss < -0.15 or price < latest['200_SMA'] or vix_val > 40
+        # 安全判斷熔斷，確保 sma200 即使意外為空也不會報錯
+        is_meltdown = portfolio_loss < -0.15 or (pd.notna(latest['200_SMA']) and price < latest['200_SMA']) or vix_val > 40
         
         if is_meltdown:
             st.error("⚠️ 系統狀態：【熔斷機制已觸發】")
@@ -153,6 +166,8 @@ with tab2:
         
     if 'master_data' not in st.session_state:
         st.warning("👈 請先從左側選單點擊「載入並聯網拼接全量數據庫」")
+    elif st.session_state['master_data'].empty:
+        st.error("⚠️ 系統沒有可用數據可供回測。")
     else:
         df_backtest = st.session_state['master_data']
         
@@ -192,7 +207,7 @@ with tab2:
 
                     if date.month != current_month:
                         current_month = date.month
-                        is_meltdown = (portfolio_loss < -0.15) or (price < sma200) or (vix_val > 40)
+                        is_meltdown = (portfolio_loss < -0.15) or (pd.notna(sma200) and price < sma200) or (vix_val > 40)
                         dca_amount = 0
                         
                         if is_meltdown:
