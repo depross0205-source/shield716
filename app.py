@@ -13,7 +13,7 @@ st.set_page_config(page_title="矛與盾 7.16 系統", page_icon="🛡️", layo
 st.title("🛡️ 矛與盾 7.16 整合系統 ⚔️")
 
 # ==========================================
-# 共用技術指標函數 (加入 min_periods 防呆)
+# 共用技術指標函數
 # ==========================================
 def calculate_rsi(data, periods=14):
     delta = data.diff()
@@ -27,11 +27,9 @@ def calculate_rsi(data, periods=14):
 def process_market_data(df):
     if df.empty: return df
     df['RSI_14'] = calculate_rsi(df['Close'], periods=14)
-    # min_periods=1 確保資料即使不到 200 週也不會產生一堆空值而被刪除
     df['200_SMA'] = df['Close'].rolling(window=200, min_periods=1).mean()
     df['52W_High'] = df['Close'].rolling(window=52, min_periods=1).max()
     df['Drawdown'] = (df['Close'] - df['52W_High']) / df['52W_High']
-    # 只針對收盤價與 RSI 過濾空值
     return df.dropna(subset=['Close', 'RSI_14'])
 
 # ==========================================
@@ -62,27 +60,31 @@ if st.sidebar.button("🔄 載入並聯網拼接全量數據庫", type="primary"
             except Exception as e:
                 st.sidebar.error(f"CSV 讀取失敗: {e}")
                 
-        # 2. 自動爬蟲抓取最新數據 (加入錯誤攔截)
+        # 2. 自動爬蟲抓取最新數據 (加入強制降維度防呆機制)
         try:
             voo = yf.download("VOO", start=start_date, interval="1wk", progress=False)
             vix = yf.download("^VIX", start=start_date, interval="1wk", progress=False)
             
-            if isinstance(voo.columns, pd.MultiIndex):
-                voo.columns = voo.columns.droplevel(1)
-            if isinstance(vix.columns, pd.MultiIndex):
-                vix.columns = vix.columns.droplevel(1)
+            # 【關鍵修復】不管 yfinance 回傳什麼多層級怪物結構，強制抽第一欄變成單純數值
+            voo_close = voo['Close'].iloc[:, 0] if isinstance(voo['Close'], pd.DataFrame) else voo['Close']
+            vix_close = vix['Close'].iloc[:, 0] if isinstance(vix['Close'], pd.DataFrame) else vix['Close']
                 
-            df_yf = pd.DataFrame({'Close': voo['Close'], 'VIX': vix['Close']}).dropna()
+            df_yf = pd.DataFrame({'Close': voo_close, 'VIX': vix_close}).dropna()
         except Exception as e:
             st.sidebar.error(f"Yahoo Finance 網路獲取失敗，請稍後重試。錯誤碼: {e}")
             df_yf = pd.DataFrame()
         
         # 3. 數據無縫拼接
         if not df_csv.empty and 'Close' in df_csv.columns:
+            # 確保日期格式完全一致，避免拼接錯誤
+            df_csv.index = pd.to_datetime(df_csv.index).tz_localize(None)
+            df_yf.index = pd.to_datetime(df_yf.index).tz_localize(None)
+            
             combined = pd.concat([df_csv[['Close', 'VIX']], df_yf])
             combined = combined[~combined.index.duplicated(keep='last')]
             combined = combined.sort_index()
         else:
+            df_yf.index = pd.to_datetime(df_yf.index).tz_localize(None)
             combined = df_yf
             
         # 4. 寫入記憶體
@@ -126,7 +128,6 @@ with tab1:
         
         st.divider()
         
-        # 安全判斷熔斷，確保 sma200 即使意外為空也不會報錯
         is_meltdown = portfolio_loss < -0.15 or (pd.notna(latest['200_SMA']) and price < latest['200_SMA']) or vix_val > 40
         
         if is_meltdown:
