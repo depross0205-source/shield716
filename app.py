@@ -9,156 +9,134 @@ from datetime import datetime, date
 # ==========================================
 # 系統初始化 (信心程度：10 分)
 # ==========================================
-st.set_page_config(page_title="矛與盾 7.45 因子全保留版", page_icon="🛡️", layout="wide")
-st.title("🛡️ 矛與盾 7.45 數據因子全保留系統 ⚔️")
+st.set_page_config(page_title="矛與盾 7.50 因子整合版", page_icon="🛡️", layout="wide")
+st.title("🛡️ 矛與盾 7.50 四大因子量化系統 ⚔️")
 
 # ==========================================
-# 工具函數：強力標準化
+# 工具函數：數據強力對齊
 # ==========================================
 def normalize_columns(df):
-    """【因子全保留】強力對齊價格與 VIX，同時保留所有原始欄位"""
+    """【因子全保留】強力對齊 SP500, SP500EW, VIX, CAPE"""
     if df.empty: return df
-    
-    # 1. 釋放索引並清理欄位名
     df = df.reset_index()
-    # 暫存原始欄位名以便比對，但不更動原始 dataframe
-    orig_cols = df.columns.tolist()
-    upper_cols = [str(c).strip().upper() for c in orig_cols]
+    df.columns = [str(c).strip() for c in df.columns]
+    upper_cols = [c.upper() for c in df.columns]
     
-    # 2. 定義模糊匹配關鍵字
-    price_kws = ['SP500', 'CLOSE', 'PRICE', 'VOO', '價格', '收盤', 'VALUE']
-    vix_kws = ['VIX', '恐慌', 'CBOE', '^VIX']
+    # 定義模糊匹配關鍵字
+    mapping = {
+        'Close': ['SP500', 'VOO', 'CLOSE', 'PRICE', '價格', '收盤'],
+        'SP500EW': ['RSP', 'EW', '等權重', 'SP500EW'],
+        'Vix': ['VIX', '恐慌', 'CBOE', '^VIX'],
+        'Cape': ['CAPE', '席勒', '本益比']
+    }
     
-    # 3. 強力尋找並建立系統統一欄位 (Close & Vix)
-    target_price_idx = -1
-    for i, col in enumerate(upper_cols):
-        if any(kw in col for kw in price_kws):
-            target_price_idx = i
-            break
-            
-    if target_price_idx != -1:
-        orig_name = orig_cols[target_price_idx]
-        df['Close'] = pd.to_numeric(df[orig_name].astype(str).str.replace(',', '').str.replace('$', ''), errors='coerce')
-        st.sidebar.success(f"✅ 價格對齊：{orig_name} -> Close")
-
-    target_vix_idx = -1
-    for i, col in enumerate(upper_cols):
-        if any(kw in col for kw in vix_kws):
-            target_vix_idx = i
-            break
-            
-    if target_vix_idx != -1:
-        orig_vix_name = orig_cols[target_vix_idx]
-        df['Vix'] = pd.to_numeric(df[orig_vix_name].astype(str).str.replace(',', ''), errors='coerce')
-        st.sidebar.success(f"✅ VIX 對齊：{orig_vix_name} -> Vix")
-    
+    for target, kws in mapping.items():
+        for i, col in enumerate(upper_cols):
+            if any(kw in col for kw in kws) and target not in df.columns:
+                df[target] = pd.to_numeric(df.iloc[:, i].astype(str).str.replace(',', '').str.replace('$', ''), errors='coerce')
+                st.sidebar.success(f"✅ 因子對齊：{df.columns[i]} -> {target}")
+                
     return df
 
 def get_base_data(start, end):
-    """獲取聯網數據作為時間軸基準"""
-    with st.spinner("正在聯網校準數據時間軸..."):
-        # 抓取 SPY 作為 2003-2010 的代理
+    """聯網抓取三大指數：VOO, RSP, VIX"""
+    with st.spinner("正在聯網校準 SP500、等權重與 VIX 數據..."):
+        # 抓取 SPY (2010前代理), VOO, RSP (等權重), VIX
         spy = yf.Ticker("SPY").history(start=start, end=end, interval="1wk")
         voo = yf.Ticker("VOO").history(start=start, end=end, interval="1wk")
+        rsp = yf.Ticker("RSP").history(start=start, end=end, interval="1wk")
         vix = yf.Ticker("^VIX").history(start=start, end=end, interval="1wk")
         
-        spy.index = spy.index.tz_localize(None)
-        voo.index = voo.index.tz_localize(None)
-        vix.index = vix.index.tz_localize(None)
-        
-        # 數據縫合
+        for d in [spy, voo, rsp, vix]:
+            if not d.empty: d.index = d.index.tz_localize(None)
+            
+        # 價格縫合邏輯 (SPY 模擬 VOO)
         if voo.empty:
             full_voo = spy[['Close']] * 0.9 
         else:
             common = voo.index[0]
-            if common in spy.index:
-                ratio = voo.at[common, 'Close'] / spy.at[common, 'Close']
-                pre_voo = spy[:common].iloc[:-1][['Close']] * ratio
-                full_voo = pd.concat([pre_voo, voo[['Close']]])
-            else:
-                full_voo = voo[['Close']]
+            ratio = voo.at[common, 'Close'] / spy.at[common, 'Close'] if common in spy.index else 0.9
+            pre_voo = spy[:common].iloc[:-1][['Close']] * ratio
+            full_voo = pd.concat([pre_voo, voo[['Close']]])
         
+        # 建立 Web 基準表
         web_df = pd.DataFrame(index=spy.index)
         web_df['Close_Web'] = full_voo['Close']
+        web_df['SP500EW_Web'] = rsp['Close']
         web_df['Vix_Web'] = vix['Close']
-        return web_df.reset_index().rename(columns={'Date': 'Date_Final'})
+        web_df.index.name = 'Date_Final'
+        return web_df.reset_index()
 
 # ==========================================
-# 主邏輯執行
+# 側邊欄與數據導入
 # ==========================================
-st.sidebar.header("📊 系統控制中心")
+st.sidebar.header("📊 系統參數設定")
 start_d = st.sidebar.date_input("回測起始日", date(2003, 5, 1))
 end_d = st.sidebar.date_input("回測結束日", date.today())
-init_core = st.sidebar.number_input("核心初始資金", value=8000000)
-init_rsv = st.sidebar.number_input("預備金總額", value=1000000)
-base_dca = st.sidebar.number_input("基礎月扣額", value=200000)
+init_funds = st.sidebar.number_input("初始總資金 (NTD)", value=9000000)
+base_dca = st.sidebar.number_input("每月 DCA 基數", value=200000)
 confirm_w = st.sidebar.slider("訊號連續週數確認", 1, 5, 1)
 
-up_file = st.sidebar.file_uploader("📥 上傳 CSV 數據", type=['csv'])
+up_file = st.sidebar.file_uploader("📥 上傳 CSV (需含 CAPE 等因子)", type=['csv'])
 
-if st.sidebar.button("🔄 執行全數據強力整合", type="primary"):
+if st.sidebar.button("🔄 執行全因子強力整合", type="primary"):
     web_df = get_base_data(start_d, end_d)
     
     if up_file:
-        df_csv = pd.read_csv(up_file)
-        df_csv = normalize_columns(df_csv)
-        
-        # 尋找日期欄位
-        date_col = None
-        for col in df_csv.columns:
-            if any(kw in str(col).upper() for kw in ['DATE', 'TIME', '日期', '時間']):
-                date_col = col; break
+        df_csv = normalize_columns(pd.read_csv(up_file))
+        date_col = next((c for c in df_csv.columns if any(k in str(c).upper() for k in ['DATE', 'TIME', '日期'])), None)
         
         if date_col:
             df_csv['Date_Final'] = pd.to_datetime(df_csv[date_col], errors='coerce')
             web_df['Date_Final'] = pd.to_datetime(web_df['Date_Final'], errors='coerce')
             
-            # 整合：保留所有原始欄位 (Outer Join)
+            # 使用 Outer Join 確保 CAPE、Spread 等因子全部保留
             final_df = pd.merge(web_df, df_csv, on='Date_Final', how='outer')
             
-            # 優先採用 CSV 數據補齊系統欄位
-            if 'Close' in final_df.columns:
-                final_df['Close'] = final_df['Close'].combine_first(final_df['Close_Web'])
-            else:
-                final_df['Close'] = final_df['Close_Web']
+            # 優先權：CSV 數據 > Web 數據
+            for target in ['Close', 'SP500EW', 'Vix']:
+                web_col = f"{target}_Web" if target != 'SP500EW' else "SP500EW_Web"
+                if target not in final_df.columns:
+                    final_df[target] = final_df[web_col]
+                else:
+                    final_df[target] = final_df[target].combine_first(final_df[web_col])
             
-            if 'Vix' in final_df.columns:
-                final_df['Vix'] = final_df['Vix'].combine_first(final_df['Vix_Web'])
-            else:
-                final_df['Vix'] = final_df['Vix_Web']
-                
             final_df = final_df.rename(columns={'Date_Final': 'Date'})
         else:
-            st.error("❌ CSV 找不到日期欄位，無法對齊。")
-            final_df = web_df.rename(columns={'Date_Final': 'Date'})
+            st.error("❌ CSV 找不到日期標籤")
+            final_df = web_df.rename(columns={'Date_Final': 'Date', 'Close_Web': 'Close', 'Vix_Web': 'Vix'})
     else:
-        final_df = web_df.rename(columns={'Date_Final': 'Date', 'Close_Web': 'Close', 'Vix_Web': 'Vix'})
+        final_df = web_df.rename(columns={'Date_Final': 'Date', 'Close_Web': 'Close', 'SP500EW_Web': 'SP500EW', 'Vix_Web': 'Vix'})
 
-    # 排序並移除 Session State 過濾
-    st.session_state['merged_df'] = final_df.sort_values('Date')
+    # 排序並儲存
+    if 'Date' in final_df.columns:
+        final_df = final_df.sort_values('Date').dropna(subset=['Date'])
+        st.session_state['merged_df'] = final_df
+    else:
+        st.error("❌ 無法建立日期索引")
 
 # ==========================================
-# 數據檢查與修正 (修正顯示邏輯)
+# 數據補強與回測
 # ==========================================
 if 'merged_df' in st.session_state:
     master = st.session_state['merged_df']
-    
-    # 偵測缺失值，但顯示時保留所有欄位
-    mask = master['Close'].isna() | master['Vix'].isna()
+    # 檢查四大因子是否齊全
+    factors = ['Close', 'SP500EW', 'Vix', 'Cape']
+    existing_factors = [f for f in factors if f in master.columns]
+    mask = master[existing_factors].isna().any(axis=1)
     missing = master[mask]
 
     if not missing.empty:
-        st.warning(f"⚠️ 偵測到有 {len(missing)} 筆數據不全，請修正 Close 與 Vix 欄位：")
-        # 這裡會顯示包含你原始因子 (CAPE, Spread等) 的完整表格
+        st.warning(f"⚠️ 偵測到有 {len(missing)} 筆核心因子缺失，請在此修正：")
         corrected = st.data_editor(missing, num_rows="fixed", use_container_width=True)
-        if st.button("💾 儲存修正並繼續"):
+        if st.button("💾 儲存並執行深度回測"):
             master.update(corrected)
             st.session_state['merged_df'] = master
             st.rerun()
     else:
-        st.success("✨ 數據對齊成功！所有因子已就緒。")
+        st.success("✨ 四大因子 (SP500, SP500EW, VIX, CAPE) 已完整對齊！")
 
-    if st.button("🚀 執行全參數深度回測"):
+    if st.button("🚀 啟動量化策略回測"):
         df_final = master.copy().set_index('Date').ffill().bfill()
         
         # 指標計算
@@ -166,18 +144,14 @@ if 'merged_df' in st.session_state:
             delta = data.diff(); g = delta.where(delta > 0, 0); l = -delta.where(delta < 0, 0)
             avg_g = g.ewm(com=periods-1, min_periods=periods).mean()
             avg_l = l.ewm(com=periods-1, min_periods=periods).mean()
-            return 100 - (100 / (1 + (avg_g / avg_l)))
+            return 100 - (100 / (1 + (avg_g / (avg_l + 1e-9))))
 
         df_final['RSI'] = calculate_rsi(df_final['Close'])
-        df_final['SMA'] = df_final['Close'].rolling(window=200, min_periods=1).mean()
-        df_final['52W_High'] = df_final['Close'].rolling(window=52, min_periods=1).max()
-        df_final['Drawdown'] = (df_final['Close'] - df_final['52W_High']) / df_final['52W_High']
-        
-        # 訊號判定
-        df_final['S_Sig'] = (df_final['RSI'] < 45).rolling(window=confirm_w).sum() == confirm_w
-        df_final['E_Sig'] = (df_final['RSI'] < 35).rolling(window=confirm_w).sum() == confirm_w
-        df_final['M_Sig'] = (df_final['RSI'] < 30).rolling(window=confirm_w).sum() == confirm_w
+        df_final['SMA_200'] = df_final['Close'].rolling(window=200, min_periods=1).mean()
+        df_final['Drawdown'] = (df_final['Close'] - df_final['Close'].rolling(window=52, min_periods=1).max()) / df_final['Close'].rolling(window=52, min_periods=1).max()
         
         st.session_state['master'] = df_final[start_d:end_d]
-        st.write("### 數據因子與系統指標預覽：")
-        st.dataframe(df_final.tail(10)) # 這裡會顯示包含原始因子和計算指標的完整表
+        st.write("### 終極因子數據表 (最後 10 筆)：")
+        # 確保顯示順序，將核心因子排在前面
+        display_cols = ['Close', 'SP500EW', 'Vix', 'Cape', 'RSI', 'Drawdown'] + [c for c in df_final.columns if c not in factors + ['RSI', 'Drawdown']]
+        st.dataframe(df_final[display_cols].tail(10))
