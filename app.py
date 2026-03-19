@@ -9,28 +9,34 @@ from datetime import datetime, date
 # ==========================================
 # 系統初始化
 # ==========================================
-st.set_page_config(page_title="矛與盾 7.28 訊號確認版", page_icon="🛡️", layout="wide")
-st.title("🛡️ 矛與盾 7.28 訊號確認量化系統 ⚔️")
+st.set_page_config(page_title="矛與盾 7.30 終極穩定版", page_icon="🛡️", layout="wide")
+st.title("🛡️ 矛與盾 7.30 數據補強量化系統 ⚔️")
 
 # ==========================================
-# 工具函數：技術指標與績效 (支援 LaTeX 運算)
+# 工具函數：技術指標與績效計算
 # ==========================================
 def calculate_perf_metrics(values, initial_capital, dates):
     returns = pd.Series(values).pct_change().dropna()
     total_return = (values[-1] - initial_capital) / initial_capital
     days = (dates.iloc[-1] - dates.iloc[0]).days
     years = days / 365.25 if days > 0 else 1
-    # 年化報酬率公式: $CAGR = (\frac{Ending Value}{Beginning Value})^{1/years} - 1$
+    # 年化報酬率 (CAGR) 計算
     cagr = (values[-1] / initial_capital) ** (1 / years) - 1
     std_dev = returns.std() * np.sqrt(52)
     sharpe = cagr / std_dev if std_dev != 0 else 0
     peak = pd.Series(values).cummax()
     mdd = ((pd.Series(values) - peak) / peak).min()
-    return {"總報酬率": f"{total_return:.2%}", "年化報酬 (CAGR)": f"{cagr:.2%}", "最大回撤 (MDD)": f"{mdd:.2%}", "年化標準差": f"{std_dev:.2%}", "夏普指數": f"{sharpe:.2f}"}
+    return {
+        "總報酬率": f"{total_return:.2%}",
+        "年化報酬 (CAGR)": f"{cagr:.2%}",
+        "最大回撤 (MDD)": f"{mdd:.2%}",
+        "年化標準差": f"{std_dev:.2%}",
+        "夏普指數": f"{sharpe:.2f}"
+    }
 
 def get_base_data(start, end):
-    """抓取數據：2010前用 SPY 模擬 VOO"""
-    with st.spinner("正在聯網獲取 VOO/SPY/VIX 數據..."):
+    """獲取 VOO/SPY/VIX 聯網數據"""
+    with st.spinner("正在聯網獲取數據中..."):
         spy = yf.Ticker("SPY").history(start=start, end=end, interval="1wk")
         voo = yf.Ticker("VOO").history(start=start, end=end, interval="1wk")
         vix = yf.Ticker("^VIX").history(start=start, end=end, interval="1wk")
@@ -45,36 +51,37 @@ def get_base_data(start, end):
 
 def calculate_rsi(data, periods=14):
     delta = data.diff()
-    gain = (delta.where(delta > 0, 0)).fillna(0); loss = (-delta.where(delta < 0, 0)).fillna(0)
-    avg_gain = gain.ewm(com=periods - 1, min_periods=periods).mean(); avg_loss = loss.ewm(com=periods - 1, min_periods=periods).mean()
+    gain = (delta.where(delta > 0, 0)).fillna(0)
+    loss = (-delta.where(delta < 0, 0)).fillna(0)
+    avg_gain = gain.ewm(com=periods - 1, min_periods=periods).mean()
+    avg_loss = loss.ewm(com=periods - 1, min_periods=periods).mean()
     return 100 - (100 / (1 + (avg_gain / avg_loss)))
 
 # ==========================================
-# 側邊欄：全參數調整
+# 側邊欄：全參數控制
 # ==========================================
-st.sidebar.header("📅 1. 區間與資金")
-start_d = st.sidebar.date_input("起始日", date(2003, 5, 1))
-end_d = st.sidebar.date_input("結束日", date.today())
-init_core = st.sidebar.number_input("核心資金 (NTD)", value=8000000)
-init_rsv = st.sidebar.number_input("預備金 (NTD)", value=1000000)
-base_dca = st.sidebar.number_input("基礎月扣額 (NTD)", value=200000)
+st.sidebar.header("📅 1. 區間與資金設定")
+start_d = st.sidebar.date_input("回測起始日", date(2003, 5, 1))
+end_d = st.sidebar.date_input("回測結束日", date.today())
+init_core = st.sidebar.number_input("核心初始資金 (NTD)", value=8000000)
+init_rsv = st.sidebar.number_input("預備金總額 (NTD)", value=1000000)
+base_dca = st.sidebar.number_input("基礎每月 DCA (NTD)", value=200000)
 
-st.sidebar.header("⚙️ 2. 訊號確認參數")
-rsi_p = st.sidebar.number_input("RSI 週期", value=14)
-# [span_2](start_span)重點：連續確認週數，預設 1，可調為 2-3[span_2](end_span)
-confirm_w = st.sidebar.slider("訊號連續確認週數 (預設1)", 1, 5, 1)
+st.sidebar.header("⚙️ 2. 策略規則 (RSI連續確認)")
+rsi_p = st.sidebar.number_input("RSI 計算週期 (週)", value=14)
+confirm_w = st.sidebar.slider("連續低於門檻之週數確認", 1, 5, 1)
 
-with st.sidebar.expander("🔍 RSI 門檻詳細設定"):
-    rsi_speed = st.slider("提速扣款 RSI 門檻", 30, 55, 45)
-    rsi_extra = st.slider("超賣加碼 RSI 門檻", 20, 45, 35)
-    rsi_melt_buy = st.slider("熔斷中加碼 RSI 門檻", 10, 40, 30)
+with st.sidebar.expander("🔍 RSI 加碼閾值設定"):
+    rsi_speed = st.slider("提速扣款門檻 (40萬)", 30, 55, 45)
+    rsi_extra = st.slider("超賣加碼門檻 (80萬)", 20, 45, 35)
+    rsi_melt_buy = st.slider("熔斷中加碼門檻", 10, 40, 30)
 
-up_file = st.sidebar.file_uploader("📥 3. 上傳 CSV (若有)", type=['csv'])
+up_file = st.sidebar.file_uploader("📥 3. 上傳歷史 CSV (選填)", type=['csv'])
 
 # ==========================================
-# 數據整合引擎
+# 數據整合引擎 (Web + CSV)
 # ==========================================
-if st.sidebar.button("🔄 執行數據預整合", type="primary"):
+if st.sidebar.button("🔄 執行聯網與 CSV 預整合", type="primary"):
     base_df = get_base_data(start_d, end_d)
     if up_file:
         df_csv = pd.read_csv(up_file, index_col=0, parse_dates=True)
@@ -82,30 +89,37 @@ if st.sidebar.button("🔄 執行數據預整合", type="primary"):
         df_csv.columns = [c.capitalize() for c in df_csv.columns]
         base_df = pd.concat([df_csv, base_df])
         base_df = base_df[~base_df.index.duplicated(keep='last')]
-    st.session_state['base_df'] = base_df.sort_index()
+    
+    # 存入 Session 供編輯器讀取
+    st.session_state['merged_df'] = base_df.sort_index().reset_index()
 
 # ==========================================
-# 手動修正與回測執行
+# 數據檢查與手動修正 (整合後的編輯區)
 # ==========================================
-if 'base_df' in st.session_state:
-    st.subheader("✍️ 數據補強：手動修正與補位")
-    st.info("若聯網或 CSV 數據不齊 (NaN)，請在下方表格填入日期與數值進行修正。")
-    correction_df = st.data_editor(pd.DataFrame(columns=["Date", "Close", "Vix"]), num_rows="dynamic", use_container_width=True)
+if 'merged_df' in st.session_state:
+    st.subheader("✍️ 數據檢查與修正 (Web + CSV 整合結果)")
+    st.write("下方表格已自動整合聯網與 CSV 數據。若有缺失 (NaN) 或錯誤，請直接在表格內點擊修正。")
+    
+    # 使用 data_editor 讓使用者直接編輯整合後的資料
+    edited_df = st.data_editor(
+        st.session_state['merged_df'],
+        num_rows="dynamic",
+        use_container_width=True,
+        key="data_corrector"
+    )
 
-    if st.button("🚀 確認數據並執行深度回測"):
-        final_df = st.session_state['base_df'].copy()
-        if not correction_df.empty:
-            df_corr = correction_df.copy(); df_corr['Date'] = pd.to_datetime(df_corr['Date'])
-            df_corr = df_corr.set_index('Date').tz_localize(None)
-            final_df = pd.concat([final_df, df_corr])
-            final_df = final_df[~final_df.index.duplicated(keep='last')].sort_index()
-            
+    if st.button("🚀 確認數據無誤，執行量化回測"):
+        final_df = edited_df.copy()
+        final_df['Date'] = pd.to_datetime(final_df['Date'])
+        final_df = final_df.set_index('Date').tz_localize(None)
+        
+        # 計算指標
         final_df['RSI'] = calculate_rsi(final_df['Close'], periods=rsi_p)
         final_df['SMA'] = final_df['Close'].rolling(window=200, min_periods=1).mean()
         final_df['52W_High'] = final_df['Close'].rolling(window=52, min_periods=1).max()
         final_df['Drawdown'] = (final_df['Close'] - final_df['52W_High']) / final_df['52W_High']
         
-        # [span_3](start_span)核心：連續訊號確認邏輯[span_3](end_span)
+        # 連續週數判定邏輯
         final_df['Speed_Sig'] = (final_df['RSI'] < rsi_speed).rolling(window=confirm_w).sum() == confirm_w
         final_df['Extra_Sig'] = (final_df['RSI'] < rsi_extra).rolling(window=confirm_w).sum() == confirm_w
         final_df['Melt_Sig'] = (final_df['RSI'] < rsi_melt_buy).rolling(window=confirm_w).sum() == confirm_w
@@ -113,17 +127,21 @@ if 'base_df' in st.session_state:
         st.session_state['master'] = final_df[start_d:end_d]
 
 # ==========================================
-# 顯示回測與績效結果
+# 績效報告輸出
 # ==========================================
 if 'master' in st.session_state:
     data = st.session_state['master']
-    t1, t2 = st.tabs(["📊 當前實時監控", "⏳ 2003年至今績效報告"])
+    t1, t2 = st.tabs(["📊 當前監控", "⏳ 回測績效報告"])
     
     with t1:
         latest = data.iloc[-1]
-        st.subheader(f"數據日期：{latest.name.strftime('%Y-%m-%d')}")
-        if pd.isna(latest['Vix']): st.error("⚠️ VIX 資料缺失，請在上方修正表格補入數值。")
-        c = st.columns(4); c[0].metric("價格", f"${latest['Close']:.2f}"); c[1].metric(f"週 RSI ({rsi_p})", f"{latest['RSI']:.1f}"); c[2].metric("VIX", f"{latest['Vix']:.1f}"); c[3].metric("距高回撤", f"{latest['Drawdown']:.1%}")
+        st.subheader(f"數據更新日期：{latest.name.strftime('%Y-%m-%d')}")
+        if pd.isna(latest['Vix']): st.error("⚠️ VIX 數據有誤，請至上方表格修正。")
+        c = st.columns(4)
+        c[0].metric("最新價", f"${latest['Close']:.2f}")
+        c[1].metric(f"RSI({rsi_p})", f"{latest['RSI']:.1f}")
+        c[2].metric("VIX", f"{latest['Vix']:.1f}")
+        c[3].metric("距高回撤", f"{latest['Drawdown']:.1%}")
 
     with t2:
         total_init = init_core + init_rsv
@@ -136,21 +154,23 @@ if 'master' in st.session_state:
             p, r, v, sma, dd, s_sig, e_sig, m_sig = row['Close'], row['RSI'], row['Vix'], row['SMA'], row['Drawdown'], row['Speed_Sig'], row['Extra_Sig'], row['Melt_Sig']
             p_loss = (p - ac_bt) / ac_bt if ac_bt > 0 else 0
             
+            # 預備金 (15/25/35 規則)
             for d_trig, flag in [(-0.35, 'r35'), (-0.25, 'r25'), (-0.15, 'r15')]:
                 if dd <= d_trig and not locals()[flag] and rsv >= init_rsv*0.3:
                     inv = init_rsv*0.3 if d_trig > -0.35 else rsv
                     shares += inv/p; rsv -= inv; exec(f"{flag}=True")
             if dd >= 0: r15 = r25 = r35 = False
 
+            # 定期定額 (DCA) 規則
             if date_idx.month != curr_m:
                 curr_m = date_idx.month
                 is_melt = (p_loss < -0.15) or (p < sma) or (v > 40)
                 amt = 0
                 if is_melt:
-                    [span_4](start_span)if m_sig: amt = base_dca * 2 # 熔斷連續達標加碼[span_4](end_span)
+                    if m_sig: amt = base_dca * 2
                 else:
-                    [span_5](start_span)if e_sig: amt = base_dca * 4 # 超賣連續達標[span_5](end_span)
-                    [span_6](start_span)elif s_sig: amt = base_dca * 2 # 提速連續達標[span_6](end_span)
+                    if e_sig: amt = base_dca * 4
+                    elif s_sig: amt = base_dca * 2
                     else: amt = base_dca
                 if amt > 0 and core >= amt: core -= amt; shares += amt/p
             
@@ -158,13 +178,13 @@ if 'master' in st.session_state:
             hist.append({'Date': date_idx, 'S_Total': (shares*p)+core+rsv, 'B_Total': bh_shrs * p})
         
         res_df = pd.DataFrame(hist)
-        st.markdown("#### 🏆 矛與盾策略 v.s. Buy & Hold 指標對比")
-        st.table(pd.DataFrame([calculate_perf_metrics(res_df['S_Total'].values, total_init, res_df['Date']), 
-                               calculate_perf_metrics(res_df['BH_Total'].values, total_init, res_df['Date'])], 
-                              index=["矛與盾策略", "Buy & Hold (大盤)"]).T)
+        st.markdown("#### 🏆 策略指標對照表")
+        s_m = calculate_perf_metrics(res_df['S_Total'].values, total_init, res_df['Date'])
+        b_m = calculate_perf_metrics(res_df['B_Total'].values, total_init, res_df['Date'])
+        st.table(pd.DataFrame([s_m, b_m], index=["矛與盾策略", "Buy & Hold (大盤)"]).T)
         
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=res_df['Date'], y=res_df['S_Total'], name='矛與盾淨值', line=dict(color='#00FFCC', width=3)))
-        fig.add_trace(go.Scatter(x=res_df['Date'], y=res_df['BH_Total'], name='大盤 B&H', line=dict(color='#888888', dash='dot')))
+        fig.add_trace(go.Scatter(x=res_df['Date'], y=res_df['S_Total'], name='策略資產', line=dict(color='#00FFCC', width=3)))
+        fig.add_trace(go.Scatter(x=res_df['Date'], y=res_df['B_Total'], name='大盤持有', line=dict(color='#888888', dash='dot')))
         fig.update_layout(template="plotly_dark", height=500, margin=dict(l=10, r=10, t=50, b=10))
         st.plotly_chart(fig, use_container_width=True)
