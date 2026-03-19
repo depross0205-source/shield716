@@ -10,7 +10,7 @@ from datetime import datetime, date
 
 # ==========================================
 
-st.set_page_config(page_title=“矛與盾 數據回歸版”, page_icon=“🛡️”, layout=“wide”)
+st.set_page_config(page_title=“Spear and Shield”, page_icon=“🛡️”, layout=“wide”)
 st.title(“🛡️ 矛與盾 數據精確回歸系統 ⚔️”)
 
 # ==========================================
