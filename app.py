@@ -35,7 +35,7 @@ def normalize_factors(df):
     d_names = ['DATE', 'TIME', '日期', 'INDEX']
     d_col = next((c for c in df.columns if any(k in c for k in d_names)), None)
     if d_col:
-        # 💡 終極修正：強制轉成字串去除空白，防止純數字 (如20050101) 被 Pandas 當成 1970 年的奈秒！
+        # 💡 關鍵修正 1：強制轉成字串，防止整數格式被當成 1970 年的奈秒！
         res['Date_Final'] = pd.to_datetime(df[d_col].astype(str).str.strip(), errors='coerce')
         if res['Date_Final'].dt.tz is not None:
             res['Date_Final'] = res['Date_Final'].dt.tz_localize(None)
@@ -104,7 +104,7 @@ B_DCA = b_dca_w * 10000
 
 st.sidebar.header("🛡️ 2. 熔斷參數")
 M_LOSS = st.sidebar.slider("虧損熔斷 (%)", -30, -5, -15) / 100
-M_SMA = st.sidebar.number_input("均線週期 (週)", value=50) # 預設先用50週確保資料不斷層
+M_SMA = st.sidebar.number_input("均線週期 (週)", value=50)
 M_VIX = st.sidebar.slider("VIX 恐慌門檻", 20, 60, 40)
 
 st.sidebar.header("⚙️ 3. 訊號參數")
@@ -194,7 +194,6 @@ with t1:
         else: st.success(f"🔵 基礎定期定額 ({B_DCA/10000:.0f}萬)")
     st.dataframe(df.tail(10))
 
-# --- 🐛 除蟲雷達版本的回測區塊 ---
 with t2:
     st.subheader("1000 萬資產回測報告")
     
@@ -206,11 +205,11 @@ with t2:
         st.write(f"👉 **檢查點 2：** 清理空值 (NaN) 後的有效資料共 `{len(bt_df)}` 筆")
         
         if bt_df.empty:
-            st.error("❌ 抓到兇手了！清理空值後資料變成 0 筆，請看下方殘留的原始資料長怎樣：")
+            st.error("❌ 清理空值後資料變成 0 筆，請看下方殘留的原始資料長怎樣：")
             st.dataframe(df.head(10))
             st.stop()
             
-        st.write("👉 **檢查點 3：** 迴圈起點資料預覽（請確認 Date 是否已經不再是 1970 年！）：")
+        st.write("👉 **檢查點 3：** 迴圈起點資料預覽（請確認 Date 已非 1970 年，且 Close 不是 0）：")
         st.dataframe(bt_df[['Date', 'Close', 'SMA', 'RSI', 'DD']].head(3))
 
         try:
@@ -263,9 +262,9 @@ with t2:
                 if len(hist) > 0:
                     res_df = pd.DataFrame(hist).set_index('Date')
                     
-                    # 💡 繪圖防當機補丁：如果所有日期都同一天，拒絕畫圖！
+                    # 💡 關鍵修正 2：繪圖防當機補丁
                     if len(res_df.index.unique()) <= 1:
-                        st.error("🚨 圖表緊急煞車：檢測到所有日期都是同一天 (1970年蟲)，繪圖會導致瀏覽器崩潰！請檢查 CSV 日期格式。")
+                        st.error("🚨 圖表緊急煞車：檢測到所有日期都是同一天 (如 1970-01-01)，繪圖會導致瀏覽器崩潰！請重新執行左側資料整合。")
                     else:
                         st.line_chart(res_df)
                     
@@ -273,4 +272,19 @@ with t2:
                         if v.empty: return ["0%", "0%", "0%", "0.00"]
                         tr = (v.iloc[-1] - T_CAP) / T_CAP if T_CAP > 0 else 0
                         y = max(len(v) / 52.0, 1.0)
-                        cagr = (v.iloc[-1] /
+                        cagr = (v.iloc[-1] / T_CAP) ** (1 / y) - 1 if T_CAP > 0 else 0
+                        mdd = ((v - v.cummax()) / v.cummax()).min()
+                        rets = v.pct_change(fill_method=None).dropna()
+                        shrp = (cagr - 0.02) / (rets.std() * np.sqrt(52)) if not rets.empty and rets.std() > 0 else 0
+                        return [f"{tr:.2%}", f"{cagr:.2%}", f"{mdd:.2%}", f"{shrp:.2f}"]
+                    
+                    st.table(pd.DataFrame({"指標": ["總報酬", "年化報酬", "最大回撤", "夏普值"],
+                                           "矛與盾": mtr(res_df['Strategy']), "B&H": mtr(res_df['BH'])}))
+                else:
+                    st.error("❌ 迴圈雖然跑完了，但沒有產出任何歷史紀錄 (hist 為空)。")
+        
+        except Exception as e:
+            st.error(f"❌ 回測運算發生錯誤: {str(e)}")
+            st.code(traceback.format_exc())
+
+st.caption("v9.50 Wall Breaker Edition | 徹底消除時區衝突、NaN 毒藥與自動當機問題")
