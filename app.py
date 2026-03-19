@@ -32,71 +32,113 @@ def process_market_data(df):
     return df.dropna()
 
 # ==========================================
+# 數據引擎中心 (側邊欄 / 頂部選單)
+# ==========================================
+st.sidebar.header("🗄️ 數據引擎中心")
+st.sidebar.info("💡 邏輯：上傳歷史 CSV，系統將自動比對最後日期，並聯網抓取最新報價進行無縫拼接，確保數據量體最大化。")
+
+uploaded_file = st.sidebar.file_uploader("上傳歷史數據 (可選，需含 Close 欄位)", type=['csv'])
+
+if st.sidebar.button("🔄 載入並聯網拼接全量數據庫", type="primary"):
+    with st.spinner("整合歷史與最新數據中..."):
+        df_csv = pd.DataFrame()
+        start_date = "2015-01-01" # 預設起始日
+        
+        # 1. 處理手動上傳的歷史數據
+        if uploaded_file is not None:
+            df_csv = pd.read_csv(uploaded_file, index_col=0, parse_dates=True)
+            if 'Close' in df_csv.columns:
+                if 'VIX' not in df_csv.columns:
+                    df_csv['VIX'] = 20.0 # 若無 VIX 給予預設安全值
+                
+                # 找出歷史數據最後一天，往前推7天(避免週線切割誤差)作為爬蟲起點
+                last_date = df_csv.index.max()
+                start_date = (last_date - pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+            else:
+                st.sidebar.error("CSV 檔案必須包含 'Close' 欄位！")
+                
+        # 2. 自動爬蟲抓取最新數據
+        voo = yf.download("VOO", start=start_date, interval="1wk", progress=False)
+        vix = yf.download("^VIX", start=start_date, interval="1wk", progress=False)
+        
+        if isinstance(voo.columns, pd.MultiIndex):
+            voo.columns = voo.columns.droplevel(1)
+            vix.columns = vix.columns.droplevel(1)
+            
+        df_yf = pd.DataFrame({'Close': voo['Close'], 'VIX': vix['Close']}).dropna()
+        
+        # 3. 數據無縫拼接
+        if not df_csv.empty and 'Close' in df_csv.columns:
+            # 將 CSV 與 YF 數據上下合併
+            combined = pd.concat([df_csv[['Close', 'VIX']], df_yf])
+            # 移除重複的日期，保留最新的 (YF) 數據
+            combined = combined[~combined.index.duplicated(keep='last')]
+            combined = combined.sort_index()
+        else:
+            combined = df_yf
+            
+        # 4. 運算所有技術指標並存入記憶體
+        st.session_state['master_data'] = process_market_data(combined)
+        st.sidebar.success(f"✅ 數據庫就緒！總計包含 {len(st.session_state['master_data'])} 筆週線資料。")
+
+# ==========================================
 # 介面分頁設定
 # ==========================================
 tab1, tab2 = st.tabs(["📊 即時監控面板", "⏳ 歷史回測引擎"])
 
 # ------------------------------------------
-# 分頁 1：即時監控面板 (手機自動更新)
+# 分頁 1：即時監控面板
 # ------------------------------------------
 with tab1:
     st.header("VOO 每週狀態監控")
     avg_cost_input = st.number_input("輸入您目前的 VOO 平均成本 (USD)", value=450.0, step=1.0)
     
-    if st.button("🔄 獲取最新市場數據"):
-        with st.spinner("正在抓取 Yahoo Finance 數據..."):
-            voo = yf.download("VOO", period="5y", interval="1wk", progress=False)
-            vix = yf.download("^VIX", period="5y", interval="1wk", progress=False)
-            
-            if isinstance(voo.columns, pd.MultiIndex):
-                voo.columns = voo.columns.droplevel(1)
-                vix.columns = vix.columns.droplevel(1)
-                
-            df_live = pd.DataFrame({'Close': voo['Close'], 'VIX': vix['Close']}).dropna()
-            df_live = process_market_data(df_live)
-            
-            latest = df_live.iloc[-1]
-            price = latest['Close']
-            rsi = latest['RSI_14']
-            vix_val = latest['VIX']
-            drawdown = latest['Drawdown']
-            portfolio_loss = (price - avg_cost_input) / avg_cost_input if avg_cost_input > 0 else 0
-            
-            # UI 數據卡片
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("VOO 收盤價", f"${price:.2f}")
-            col2.metric("週線 RSI(14)", f"{rsi:.1f}")
-            col3.metric("VIX 恐慌指數", f"{vix_val:.1f}")
-            col4.metric("距52週高點回撤", f"{drawdown:.1%}")
-            
-            st.divider()
-            
-            # 邏輯判斷
-            is_meltdown = portfolio_loss < -0.15 or price < latest['200_SMA'] or vix_val > 40
-            
-            if is_meltdown:
-                st.error("⚠️ 系統狀態：【熔斷機制已觸發】")
-                if rsi < 30:
-                    st.warning(f"🔴 熔斷中：允許單次紀律加碼 (投入 40 萬)")
-                else:
-                    st.error("🔴 熔斷中：暫停所有常規 DCA")
+    if 'master_data' not in st.session_state:
+        st.warning("👈 請先從左側選單點擊「載入並聯網拼接全量數據庫」")
+    else:
+        df_live = st.session_state['master_data']
+        latest = df_live.iloc[-1]
+        
+        price = latest['Close']
+        rsi = latest['RSI_14']
+        vix_val = latest['VIX']
+        drawdown = latest['Drawdown']
+        portfolio_loss = (price - avg_cost_input) / avg_cost_input if avg_cost_input > 0 else 0
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("最新收盤價", f"${price:.2f}", f"日期: {latest.name.strftime('%Y-%m-%d')}")
+        col2.metric("週線 RSI(14)", f"{rsi:.1f}")
+        col3.metric("VIX 恐慌指數", f"{vix_val:.1f}")
+        col4.metric("距52週高點回撤", f"{drawdown:.1%}")
+        
+        st.divider()
+        
+        # 邏輯判斷
+        is_meltdown = portfolio_loss < -0.15 or price < latest['200_SMA'] or vix_val > 40
+        
+        if is_meltdown:
+            st.error("⚠️ 系統狀態：【熔斷機制已觸發】")
+            if rsi < 30:
+                st.warning(f"🔴 熔斷中：允許單次紀律加碼 (投入 40 萬)")
             else:
-                st.success("✅ 系統狀態：正常運行中")
-                if rsi > 45:
-                    st.info("🟢 正常/留意區：執行基礎 DCA (投入 20 萬)")
-                elif 35 <= rsi <= 45:
-                    st.warning("🟡 弱勢修正：DCA 提速 (投入 40 萬)")
-                elif rsi < 35:
-                    st.error("🔥 超賣區：提速 + 額外加碼 (投入 80 萬)")
-                    
-            if drawdown <= -0.15:
-                st.error(f"🚨 黑天鵝預備金觸發：目前回撤 {drawdown:.1%}，請依紀律動用預備金！")
+                st.error("🔴 熔斷中：暫停所有常規 DCA")
+        else:
+            st.success("✅ 系統狀態：正常運行中")
+            if rsi > 45:
+                st.info("🟢 正常/留意區：執行基礎 DCA (投入 20 萬)")
+            elif 35 <= rsi <= 45:
+                st.warning("🟡 弱勢修正：DCA 提速 (投入 40 萬)")
+            elif rsi < 35:
+                st.error("🔥 超賣區：提速 + 額外加碼 (投入 80 萬)")
+                
+        if drawdown <= -0.15:
+            st.error(f"🚨 黑天鵝預備金觸發：目前回撤 {drawdown:.1%}，請依紀律動用預備金！")
 
 # ------------------------------------------
-# 分頁 2：歷史回測引擎 (參數可調 + CSV 支援)
+# 分頁 2：歷史回測引擎
 # ------------------------------------------
 with tab2:
-    st.header("策略參數設定")
+    st.header("策略參數設定與回測")
     
     with st.expander("⚙️ 調整資金與 RSI 參數", expanded=False):
         c1, c2 = st.columns(2)
@@ -109,38 +151,11 @@ with tab2:
         rsi_os = c4.number_input("加碼 RSI 閾值", value=35)
         rsi_melt = c5.number_input("熔斷加碼 RSI 閾值", value=30)
         
-    st.subheader("資料來源")
-    data_source = st.radio("選擇回測資料來源", ["Python 自動抓取 (yfinance)", "上傳歷史數據 (CSV)"])
-    
-    df_backtest = None
-    if data_source == "上傳歷史數據 (CSV)":
-        uploaded_file = st.file_uploader("請上傳包含 Date 與 Close 欄位的 CSV 檔案", type=['csv'])
-        if uploaded_file is not None:
-            df_bt_raw = pd.read_csv(uploaded_file, index_col=0, parse_dates=True)
-            if 'Close' in df_bt_raw.columns:
-                if 'VIX' not in df_bt_raw.columns:
-                    df_bt_raw['VIX'] = 20.0 
-                df_backtest = process_market_data(df_bt_raw)
-                st.success("CSV 讀取成功！")
-            else:
-                st.error("CSV 檔案必須包含 'Close' 欄位！")
+    if 'master_data' not in st.session_state:
+        st.warning("👈 請先從左側選單點擊「載入並聯網拼接全量數據庫」")
     else:
-        st.info("將自動抓取 2015 年至今的 VOO 數據進行回測")
-        if st.button("📥 下載數據並準備"):
-            with st.spinner("下載歷史數據中..."):
-                voo = yf.download("VOO", start="2015-01-01", interval="1wk", progress=False)
-                vix = yf.download("^VIX", start="2015-01-01", interval="1wk", progress=False)
-                if isinstance(voo.columns, pd.MultiIndex):
-                    voo.columns = voo.columns.droplevel(1)
-                    vix.columns = vix.columns.droplevel(1)
-                df_bt_raw = pd.DataFrame({'Close': voo['Close'], 'VIX': vix['Close']}).dropna()
-                st.session_state['df_backtest'] = process_market_data(df_bt_raw)
-            st.success("數據下載完成！")
-            
-    if 'df_backtest' in st.session_state and data_source == "Python 自動抓取 (yfinance)":
-        df_backtest = st.session_state['df_backtest']
-
-    if df_backtest is not None:
+        df_backtest = st.session_state['master_data']
+        
         if st.button("🚀 執行歷史回測", type="primary"):
             with st.spinner("運算回測邏輯中..."):
                 core_cash = init_core
