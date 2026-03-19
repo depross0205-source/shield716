@@ -62,7 +62,7 @@ with tab1:
             drawdown = latest['Drawdown']
             portfolio_loss = (price - avg_cost_input) / avg_cost_input if avg_cost_input > 0 else 0
             
-            # UI 數據卡片 (手機端會自動折疊成直排)
+            # UI 數據卡片
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("VOO 收盤價", f"${price:.2f}")
             col2.metric("週線 RSI(14)", f"{rsi:.1f}")
@@ -98,7 +98,6 @@ with tab1:
 with tab2:
     st.header("策略參數設定")
     
-    # 參數設定區 (使用 expander 節省手機畫面空間)
     with st.expander("⚙️ 調整資金與 RSI 參數", expanded=False):
         c1, c2 = st.columns(2)
         init_core = c1.number_input("核心初始資金", value=8000000, step=100000)
@@ -119,7 +118,6 @@ with tab2:
         if uploaded_file is not None:
             df_bt_raw = pd.read_csv(uploaded_file, index_col=0, parse_dates=True)
             if 'Close' in df_bt_raw.columns:
-                # 若 CSV 沒有 VIX，為了回測能跑，我們給一個安全的預設值
                 if 'VIX' not in df_bt_raw.columns:
                     df_bt_raw['VIX'] = 20.0 
                 df_backtest = process_market_data(df_bt_raw)
@@ -127,7 +125,6 @@ with tab2:
             else:
                 st.error("CSV 檔案必須包含 'Close' 欄位！")
     else:
-        # 使用 yfinance
         st.info("將自動抓取 2015 年至今的 VOO 數據進行回測")
         if st.button("📥 下載數據並準備"):
             with st.spinner("下載歷史數據中..."):
@@ -143,7 +140,6 @@ with tab2:
     if 'df_backtest' in st.session_state and data_source == "Python 自動抓取 (yfinance)":
         df_backtest = st.session_state['df_backtest']
 
-    # 執行回測按鈕
     if df_backtest is not None:
         if st.button("🚀 執行歷史回測", type="primary"):
             with st.spinner("運算回測邏輯中..."):
@@ -163,7 +159,6 @@ with tab2:
                     drawdown = row['Drawdown']
                     portfolio_loss = (price - avg_cost) / avg_cost if avg_cost > 0 else 0
                     
-                    # 預備金邏輯
                     if drawdown <= -0.35 and not rsv_35_used and reserve_cash > 0:
                         shares += reserve_cash / price
                         reserve_cash = 0
@@ -180,7 +175,6 @@ with tab2:
                     if drawdown >= 0:
                         rsv_15_used = rsv_25_used = rsv_35_used = False
 
-                    # DCA 邏輯
                     if date.month != current_month:
                         current_month = date.month
                         is_meltdown = (portfolio_loss < -0.15) or (price < sma200) or (vix_val > 40)
@@ -205,7 +199,6 @@ with tab2:
                 
                 res_df = pd.DataFrame(history)
                 
-                # 繪製圖表
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
                 fig.add_trace(go.Scatter(x=res_df['Date'], y=res_df['Total_Value'], name='總市值'), row=1, col=1)
                 fig.add_trace(go.Scatter(x=res_df['Date'], y=res_df['Price'], name='VOO 價格'), row=2, col=1)
