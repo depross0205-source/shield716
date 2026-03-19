@@ -1,6 +1,5 @@
 yfinance
 pandas
 numpy
-streamlit
+streamlit>=1.21.0
 plotly
-altair<5
