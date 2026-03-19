@@ -197,54 +197,83 @@ with t1:
 with t2:
     st.subheader("1000 萬資產回測報告")
     
-    # 加入獨立的回測啟動按鈕，防止背景運算卡死
     if st.button("▶️ 開始執行策略回測", key="run_backtest"):
+        # 數據預處理：確保回測開始前沒有遺失值，這是解決跑不出數據的關鍵！
+        bt_df = df.dropna(subset=['Close', 'SMA', 'RSI']).copy()
+        
+        if bt_df.empty:
+            st.error("❌ 數據不足：SMA 或 RSI 計算尚無足夠數據（請檢查均線週期是否過長）。")
+            st.stop()
+
         try:
-            with st.spinner('正在運算 1000 萬資產配置邏輯...'):
-                sh, d_p, r_p, c_m, hist = 0, D_POOL, C_RSV, -1, []
-                bh_sh = T_CAP / df['Close'].iloc[0] if df['Close'].iloc[0] > 0 else 0
+            with st.spinner('正在執行 1000 萬資產配置...'):
+                # 初始化變數
+                sh = 0.0          # 持股數
+                d_p = D_POOL      # 剩餘可支配資金池 (DCA 用)
+                r_p = C_RSV       # 預備金 (抄底用)
+                c_m = -1          # 月份追蹤
+                hist = []
+                
+                # B&H 基準：第一天全倉買入
+                first_p = bt_df['Close'].iloc[0]
+                bh_sh = T_CAP / first_p
+                
                 flags = {'r15': False, 'r25': False, 'r35': False}
-                
-                for i, row in df.iterrows():
-                    p, dd = row['Close'], row['DD']
+
+                for _, row in bt_df.iterrows():
+                    p = float(row['Close'])
+                    dd = float(row['DD'])
+                    rsi = float(row['RSI'])
+                    sma = float(row['SMA'])
+                    vix = float(row.get('VIX', 0))
                     
-                    # 防護除以零
-                    if p <= 0: continue
-                    
-                    ac = (T_CAP - d_p - r_p) / sh if sh > 0 else 0
-                    l_bt = (p - ac) / ac if ac > 0 else 0
-                    
-                    # 預備金抄底 (15/25/35%)
+                    # 1. 預備金抄底邏輯 (基於 52 週回撤)
                     for tr, k in [(-0.15, 'r15'), (-0.25, 'r25'), (-0.35, 'r35')]:
-                        if dd <= tr and not flags[k] and r_p >= C_RSV * 0.3:
-                            inv = C_RSV * 0.3 if tr > -0.35 else r_p
-                            sh += inv / p; r_p -= inv; flags[k] = True
-                    if dd >= 0: flags = {key: False for key in flags}
+                        if dd <= tr and not flags[k] and r_p > 0:
+                            # 每次投入預備金的 1/3
+                            inv_amt = C_RSV * 0.33 
+                            actual_inv = min(inv_amt, r_p)
+                            sh += actual_inv / p
+                            r_p -= actual_inv
+                            flags[k] = True
                     
-                    # 每月階梯 DCA
-                    if row['Date'].month != c_m:
-                        c_m = row['Date'].month
-                        v_val = row.get('VIX', 0)
-                        v_val = 0 if pd.isna(v_val) else v_val # 防 NaN 毒藥
+                    # 回撤修復時重置 flag (放寬至 -0.05，避免鎖死)
+                    if dd >= -0.05: 
+                        for k in flags: flags[k] = False
+                    
+                    # 2. 定期定額 (DCA) 邏輯 - 每月執行一次
+                    curr_date = row['Date']
+                    if curr_date.month != c_m:
+                        c_m = curr_date.month
                         
-                        melt = l_bt < M_LOSS or p < row['SMA'] or v_val > M_VIX
-                        amt = 0
-                        if not melt:
-                            if row['RSI'] < R_LV1: amt = B_DCA * 4
-                            elif row['RSI'] < R_LV2: amt = B_DCA * 2
+                        # 熔斷判斷：只要符合任一條件就不買
+                        is_melted = (p < sma) or (vix > M_VIX)
+                        
+                        if not is_melted:
+                            # 決定本次 DCA 金額
+                            if rsi < R_LV1: amt = B_DCA * 4
+                            elif rsi < R_LV2: amt = B_DCA * 2
                             else: amt = B_DCA
-                        if amt > 0 and d_p >= amt: d_p -= amt; sh += amt / p
+                            
+                            # 從資金池扣款
+                            actual_dca = min(amt, d_p)
+                            if actual_dca > 0:
+                                sh += actual_dca / p
+                                d_p -= actual_dca
                     
-                    hist.append({'Date': row['Date'], 'Strategy': sh * p + d_p + r_p, 'BH': bh_sh * p})
+                    # 3. 記錄每日價值
+                    total_val = (sh * p) + d_p + r_p
+                    hist.append({'Date': curr_date, 'Strategy': total_val, 'BH': bh_sh * p})
                 
-                res = pd.DataFrame(hist).set_index('Date')
-                st.line_chart(res)
+                # 轉為 DataFrame 繪圖
+                res_df = pd.DataFrame(hist).set_index('Date')
+                st.line_chart(res_df)
                 
-                # 績效計算與防呆
+                # --- 績效指標計算 ---
                 def mtr(v):
                     if v.empty: return ["0%", "0%", "0%", "0.00"]
                     tr = (v.iloc[-1] - T_CAP) / T_CAP if T_CAP > 0 else 0
-                    y = max(len(v) / 52.0, 1.0)
+                    y = max(len(v) / 52.0, 1.0) # 預設你抓的週資料
                     cagr = (v.iloc[-1] / T_CAP) ** (1 / y) - 1 if T_CAP > 0 else 0
                     mdd = ((v - v.cummax()) / v.cummax()).min()
                     rets = v.pct_change(fill_method=None).dropna()
@@ -252,7 +281,7 @@ with t2:
                     return [f"{tr:.2%}", f"{cagr:.2%}", f"{mdd:.2%}", f"{shrp:.2f}"]
                 
                 st.table(pd.DataFrame({"指標": ["總報酬", "年化報酬", "最大回撤", "夏普值"],
-                                       "矛與盾": mtr(res['Strategy']), "B&H": mtr(res['BH'])}))
+                                       "矛與盾": mtr(res_df['Strategy']), "B&H": mtr(res_df['BH'])}))
         
         except Exception as e:
             st.error(f"❌ 回測運算發生錯誤: {str(e)}")
