@@ -13,7 +13,7 @@ st.set_page_config(page_title="矛與盾 7.16 系統", page_icon="🛡️", layo
 st.title("🛡️ 矛與盾 7.16 整合系統 ⚔️")
 
 # ==========================================
-# 工具函數：技術指標與數據清洗
+# 工具函數：技術指標
 # ==========================================
 def calculate_rsi(data, periods=14):
     delta = data.diff()
@@ -23,15 +23,6 @@ def calculate_rsi(data, periods=14):
     avg_loss = loss.ewm(com=periods - 1, min_periods=periods).mean()
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
-
-def clean_and_fix_df(df):
-    """處理 yfinance 的多層 Index 與空值問題"""
-    if df.empty: return df
-    # 如果是多層欄位 (MultiIndex)，只取第一層
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    # 確保只留下必要的欄位並移除空值
-    return df.loc[:, ~df.columns.duplicated()].dropna()
 
 def process_market_data(df):
     if df.empty: return df
@@ -43,58 +34,75 @@ def process_market_data(df):
     return df.dropna(subset=['Close', 'RSI_14'])
 
 # ==========================================
-# 數據引擎中心
+# 數據引擎中心 (使用極度穩定的 Ticker API)
 # ==========================================
 st.sidebar.header("🗄️ 數據引擎中心")
 uploaded_file = st.sidebar.file_uploader("上傳歷史 CSV (需含 Close 欄位)", type=['csv'])
 
 if st.sidebar.button("🔄 載入並聯網拼接全量數據庫", type="primary"):
-    with st.spinner("正在校準數據時間軸..."):
+    with st.spinner("正在啟動高穩定數據引擎..."):
         df_csv = pd.DataFrame()
         start_date = "2015-01-01" 
         
+        # 1. 處理 CSV
         if uploaded_file is not None:
             try:
                 df_csv = pd.read_csv(uploaded_file, index_col=0, parse_dates=True)
                 if 'Close' in df_csv.columns:
                     if 'VIX' not in df_csv.columns: df_csv['VIX'] = 20.0 
+                    
+                    # 強制移除 CSV 時區，避免合併衝突
+                    df_csv.index = pd.to_datetime(df_csv.index)
+                    if df_csv.index.tz is not None:
+                        df_csv.index = df_csv.index.tz_convert(None)
+                        
                     last_date = df_csv.index.max()
                     if pd.notnull(last_date):
                         start_date = (last_date - pd.Timedelta(days=7)).strftime('%Y-%m-%d')
             except Exception as e:
                 st.sidebar.error(f"CSV 讀取失敗: {e}")
                 
+        # 2. 使用 Ticker().history() 取代不穩定的 yf.download
         try:
-            # 分開抓取以避免對齊錯誤
-            voo_raw = yf.download("VOO", start=start_date, interval="1wk", progress=False)
-            vix_raw = yf.download("^VIX", start=start_date, interval="1wk", progress=False)
+            voo_df = yf.Ticker("VOO").history(start=start_date, interval="1wk")
+            vix_df = yf.Ticker("^VIX").history(start=start_date, interval="1wk")
             
-            # 清洗 yfinance 數據
-            voo_clean = clean_and_fix_df(voo_raw)
-            vix_clean = clean_and_fix_df(vix_raw)
+            # 強制移除爬蟲數據的時區
+            if not voo_df.empty:
+                voo_df.index = pd.to_datetime(voo_df.index)
+                if voo_df.index.tz is not None:
+                    voo_df.index = voo_df.index.tz_convert(None)
+            if not vix_df.empty:
+                vix_df.index = pd.to_datetime(vix_df.index)
+                if vix_df.index.tz is not None:
+                    vix_df.index = vix_df.index.tz_convert(None)
             
-            # 使用 inner join 強制時間對齊
-            df_yf = pd.DataFrame({
-                'Close': voo_clean['Close'],
-                'VIX': vix_clean['Close']
-            }).dropna()
-            
-            # 拼接邏輯
-            if not df_csv.empty:
-                df_csv.index = pd.to_datetime(df_csv.index).tz_localize(None)
-                df_yf.index = pd.to_datetime(df_yf.index).tz_localize(None)
+            # 安全對齊合併
+            if not voo_df.empty and not vix_df.empty:
+                df_yf = pd.DataFrame({
+                    'Close': voo_df['Close'],
+                    'VIX': vix_df['Close']
+                }).dropna()
+            else:
+                df_yf = pd.DataFrame()
+                
+            # 3. 歷史與最新數據拼接
+            if not df_csv.empty and not df_yf.empty:
                 combined = pd.concat([df_csv[['Close', 'VIX']], df_yf])
                 combined = combined[~combined.index.duplicated(keep='last')].sort_index()
+            elif not df_csv.empty:
+                combined = df_csv
             else:
-                combined = df_yf.tz_localize(None) if df_yf.index.tz is not None else df_yf
+                combined = df_yf
             
+            # 4. 存入系統記憶體
             if combined.empty:
-                st.sidebar.error("數據拼接後為空，請檢查網路。")
+                st.sidebar.error("數據獲取為空，請確認網路狀態。")
             else:
                 st.session_state['master_data'] = process_market_data(combined)
                 st.sidebar.success(f"✅ 數據就緒！共 {len(st.session_state['master_data'])} 筆。")
         except Exception as e:
-            st.sidebar.error(f"數據對齊失敗: {e}")
+            st.sidebar.error(f"網路獲取發生異常: {e}")
 
 # ==========================================
 # 介面分頁設定
@@ -106,22 +114,20 @@ tab1, tab2 = st.tabs(["📊 即時監控面板", "⏳ 歷史回測引擎"])
 # ------------------------------------------
 with tab1:
     if 'master_data' not in st.session_state:
-        st.warning("👈 請先從側邊選單載入數據庫")
+        st.warning("👈 請先從左側選單載入數據庫")
     else:
         df_live = st.session_state['master_data']
-        avg_cost = st.number_input("您的 VOO 平均成本", value=450.0)
+        avg_cost = st.number_input("您的 VOO 平均成本 (USD)", value=450.0)
         latest = df_live.iloc[-1]
         
-        # UI 卡片展示
         cols = st.columns(4)
         cols[0].metric("最新價格", f"${latest['Close']:.2f}")
         cols[1].metric("週線 RSI", f"{latest['RSI_14']:.1f}")
         cols[2].metric("VIX 指數", f"{latest['VIX']:.1f}")
         cols[3].metric("回撤幅度", f"{latest['Drawdown']:.1%}")
         
-        # 核心判斷邏輯
-        p_loss = (latest['Close'] - avg_cost) / avg_cost
-        is_melt = p_loss < -0.15 or latest['Close'] < latest['200_SMA'] or latest['VIX'] > 40
+        p_loss = (latest['Close'] - avg_cost) / avg_cost if avg_cost > 0 else 0
+        is_melt = p_loss < -0.15 or (pd.notna(latest['200_SMA']) and latest['Close'] < latest['200_SMA']) or latest['VIX'] > 40
         
         st.divider()
         if is_melt:
@@ -139,9 +145,65 @@ with tab1:
 with tab2:
     if 'master_data' in st.session_state:
         st.header("參數化回測")
-        base_amt = st.number_input("每月基礎扣款 (萬)", value=20)
+        with st.expander("⚙️ 調整參數", expanded=False):
+            c1, c2 = st.columns(2)
+            init_core = c1.number_input("核心資金", value=8000000, step=100000)
+            init_rsv = c1.number_input("預備資金", value=1000000, step=100000)
+            base_dca = c2.number_input("基礎 DCA", value=200000, step=10000)
+            c3, c4, c5 = st.columns(3)
+            rsi_weak = c3.number_input("提速閾值", value=45)
+            rsi_os = c4.number_input("加碼閾值", value=35)
+            rsi_melt = c5.number_input("熔斷閾值", value=30)
+            
         if st.button("🚀 開始回測", type="primary"):
-            df_bt = st.session_state['master_data']
-            # 此處簡化回測顯示，確保系統穩定
-            st.line_chart(df_bt['Close'])
-            st.success("數據流測試正常，可進行完整回測運算。")
+            with st.spinner("運算中..."):
+                df_bt = st.session_state['master_data']
+                core_cash = init_core
+                reserve_cash = init_rsv
+                shares = avg_cost = 0.0
+                rsv_15_used = rsv_25_used = rsv_35_used = False
+                history = []
+                current_month = -1
+
+                for date, row in df_bt.iterrows():
+                    price, rsi, vix_val, sma200, drawdown = row['Close'], row['RSI_14'], row['VIX'], row['200_SMA'], row['Drawdown']
+                    portfolio_loss = (price - avg_cost) / avg_cost if avg_cost > 0 else 0
+                    
+                    if drawdown <= -0.35 and not rsv_35_used and reserve_cash > 0:
+                        shares += reserve_cash / price; reserve_cash = 0; rsv_35_used = True
+                    elif drawdown <= -0.25 and not rsv_25_used and reserve_cash >= init_rsv*0.3:
+                        shares += (init_rsv*0.3) / price; reserve_cash -= (init_rsv*0.3); rsv_25_used = True
+                    elif drawdown <= -0.15 and not rsv_15_used and reserve_cash >= init_rsv*0.3:
+                        shares += (init_rsv*0.3) / price; reserve_cash -= (init_rsv*0.3); rsv_15_used = True
+                        
+                    if drawdown >= 0: rsv_15_used = rsv_25_used = rsv_35_used = False
+
+                    if date.month != current_month:
+                        current_month = date.month
+                        is_meltdown = (portfolio_loss < -0.15) or (pd.notna(sma200) and price < sma200) or (vix_val > 40)
+                        dca_amount = 0
+                        
+                        if is_meltdown:
+                            if rsi < rsi_melt: dca_amount = base_dca * 2
+                        else:
+                            if rsi < rsi_os: dca_amount = base_dca * 4
+                            elif rsi < rsi_weak: dca_amount = base_dca * 2
+                            else: dca_amount = base_dca
+                                
+                        if dca_amount > 0 and core_cash >= dca_amount:
+                            core_cash -= dca_amount; shares += dca_amount / price
+                            
+                    total_invested = (init_core - core_cash) + (init_rsv - reserve_cash)
+                    avg_cost = total_invested / shares if shares > 0 else 0
+                    total_val = (shares * price) + core_cash + reserve_cash
+                    history.append({'Date': date, 'Total_Value': total_val, 'Price': price, 'Avg_Cost': avg_cost})
+                
+                res_df = pd.DataFrame(history)
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
+                fig.add_trace(go.Scatter(x=res_df['Date'], y=res_df['Total_Value'], name='總市值'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=res_df['Date'], y=res_df['Price'], name='VOO 價格'), row=2, col=1)
+                fig.add_trace(go.Scatter(x=res_df['Date'], y=res_df['Avg_Cost'], name='持有均價'), row=2, col=1)
+                fig.update_layout(height=600, title_text="回測資產成長曲線")
+                
+                st.plotly_chart(fig, use_container_width=True)
+                st.success(f"回測結束！區間總報酬率：{(res_df.iloc[-1]['Total_Value'] - (init_core + init_rsv)) / (init_core + init_rsv):.2%}")
