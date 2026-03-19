@@ -4,13 +4,18 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime
 
 # ==========================================
-# 系統初始化與 UI 設定
+# 系統初始化與版本防護
 # ==========================================
-st.set_page_config(page_title="矛與盾 7.16 終極整合系統", page_icon="🛡️", layout="wide")
-st.title("🛡️ 矛與盾 7.16 數據對齊系統 ⚔️")
+st.set_page_config(page_title="矛與盾 7.16 專業回測版", page_icon="🛡️", layout="wide")
+st.title("🛡️ 矛與盾 7.16 專業數據系統 ⚔️")
+
+def safe_divider():
+    try:
+        st.divider()
+    except AttributeError:
+        st.markdown("---")
 
 # ==========================================
 # 工具函數：技術指標與數據標準化
@@ -25,40 +30,22 @@ def calculate_rsi(data, periods=14):
     return 100 - (100 / (1 + rs))
 
 def normalize_data(df):
-    """將所有可能的價格欄位名稱(Price/price/close)統一轉為 Close"""
     if df.empty: return df
-    
-    # 1. 處理時區與索引
     df.index = pd.to_datetime(df.index).tz_localize(None)
-    
-    # 2. 處理 yfinance 可能的多層索引
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-        
-    # 3. 欄位名標準化 (將所有欄位轉為首字母大寫，例如 price -> Price)
+    # 支援不分大小寫的 Close 或 Price 欄位
     df.columns = [str(c).capitalize() for c in df.columns]
-    
-    # 4. 關鍵邏輯：如果看到 Price 卻沒有 Close，則將 Price 改名為 Close
     if 'Price' in df.columns and 'Close' not in df.columns:
         df = df.rename(columns={'Price': 'Close'})
+    if 'Close' not in df.columns: return pd.DataFrame()
     
-    # 5. 確保只取必要的欄位
-    if 'Close' not in df.columns:
-        return pd.DataFrame()
-        
-    # 處理重複欄位(取第一欄)
     clean_df = pd.DataFrame()
     clean_df['Close'] = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
-    
-    if 'Vix' in df.columns:
-        clean_df['Vix'] = df['Vix'].iloc[:, 0] if isinstance(df['Vix'], pd.DataFrame) else df['Vix']
-    else:
-        clean_df['Vix'] = 20.0
-        
+    clean_df['Vix'] = df['Vix'].iloc[:, 0] if ('Vix' in df.columns and isinstance(df['Vix'], pd.DataFrame)) else df.get('Vix', 20.0)
     return clean_df
 
 def process_metrics(df):
-    """計算核心指標"""
     df = df.copy().sort_index()
     df['RSI_14'] = calculate_rsi(df['Close'], periods=14)
     df['200_SMA'] = df['Close'].rolling(window=200, min_periods=1).mean()
@@ -67,83 +54,110 @@ def process_metrics(df):
     return df.dropna(subset=['Close', 'RSI_14'])
 
 # ==========================================
-# 數據引擎：側邊欄導入
+# 側邊欄：回測參數設定 (全參數開放)
 # ==========================================
-st.sidebar.header("📥 數據導入設定")
-up_file = st.sidebar.file_uploader("1. 上傳歷史 CSV (選填)", type=['csv'])
+st.sidebar.header("⚙️ 策略參數設定")
+with st.sidebar.expander("💰 資金配置", expanded=True):
+    init_core = st.number_input("核心初始資金 (NTD)", value=8000000, step=100000)
+    init_rsv = st.number_input("預備金總額 (NTD)", value=1000000, step=100000)
+    base_dca = st.number_input("基礎每月 DCA (NTD)", value=200000, step=10000)
 
-if st.sidebar.button("🚀 執行全自動數據對齊與更新", type="primary"):
-    with st.spinner("正在縫合數據庫..."):
-        # A. 取得 CSV 數據
-        df_csv = pd.DataFrame()
-        if up_file is not None:
-            raw_csv = pd.read_csv(up_file, index_col=0, parse_dates=True)
-            df_csv = normalize_data(raw_csv)
-            
-        # B. 取得 聯網最新數據 (Ticker API 最穩定)
+with st.sidebar.expander("📉 RSI 觸發閾值", expanded=True):
+    rsi_melt = st.slider("熔斷加碼區 (RSI < X)", 20, 35, 30)
+    rsi_os = st.slider("超賣加碼區 (RSI < X)", 30, 45, 35)
+    rsi_weak = st.slider("提速扣款區 (RSI < X)", 40, 55, 45)
+
+st.sidebar.markdown("---")
+up_file = st.sidebar.file_uploader("📥 上傳歷史 CSV (選填)", type=['csv'])
+
+# ==========================================
+# 數據整合引擎
+# ==========================================
+if st.sidebar.button("🚀 執行數據整合與回測", type="primary"):
+    with st.spinner("數據處理中..."):
+        df_csv = normalize_data(pd.read_csv(up_file, index_col=0, parse_dates=True)) if up_file else pd.DataFrame()
         df_yf = pd.DataFrame()
         try:
-            v_raw = yf.Ticker("VOO").history(period="2y", interval="1wk")
-            x_raw = yf.Ticker("^VIX").history(period="2y", interval="1wk")
-            v_norm = normalize_data(v_raw)
-            x_norm = normalize_data(x_raw)
-            df_yf = pd.DataFrame({'Close': v_norm['Close'], 'Vix': x_norm['Vix']}).dropna()
-        except Exception as e:
-            st.sidebar.warning(f"自動更新連線受阻，將以 CSV 為主。")
+            v_raw = yf.Ticker("VOO").history(period="10y", interval="1wk")
+            x_raw = yf.Ticker("^VIX").history(period="10y", interval="1wk")
+            df_yf = pd.DataFrame({'Close': normalize_data(v_raw)['Close'], 'Vix': normalize_data(x_raw).get('Vix', 20.0)}).dropna()
+        except: pass
 
-        # C. 無縫拼接邏輯
         if not df_csv.empty and not df_yf.empty:
-            # 合併並去重，以爬蟲最新資料為準
             combined = pd.concat([df_csv, df_yf])
             combined = combined[~combined.index.duplicated(keep='last')].sort_index()
-            st.session_state['master'] = process_metrics(combined)
-            st.sidebar.success("✅ CSV 與 聯網數據完美縫合")
-        elif not df_csv.empty:
-            st.session_state['master'] = process_metrics(df_csv)
-            st.sidebar.success("✅ 已載入 CSV 歷史數據")
-        elif not df_yf.empty:
-            st.session_state['master'] = process_metrics(df_yf)
-            st.sidebar.success("✅ 已載入聯網最新數據")
         else:
-            st.sidebar.error("❌ 找不到有效數據，請檢查 CSV 欄位。")
+            combined = df_csv if not df_csv.empty else df_yf
+            
+        if not combined.empty:
+            st.session_state['master'] = process_metrics(combined)
+            st.sidebar.success("✅ 數據載入成功")
+        else:
+            st.sidebar.error("❌ 找不到有效數據")
 
 # ==========================================
-# 主介面顯示
+# 顯示介面
 # ==========================================
 if 'master' in st.session_state:
     data = st.session_state['master']
-    t1, t2 = st.tabs(["📊 實時監控面板", "⏳ 策略模擬回測"])
+    t1, t2 = st.tabs(["📊 當前監控", "⏳ 完整回測報告"])
     
     with t1:
         latest = data.iloc[-1]
         st.subheader(f"數據基準日：{latest.name.strftime('%Y-%m-%d')}")
-        cost = st.number_input("您的 VOO 平均成本 (USD)", value=450.0)
-        
+        cost = st.number_input("您的平均成本", value=450.0)
         c = st.columns(4)
         c[0].metric("最新價格", f"${latest['Close']:.2f}")
-        c[1].metric("週線 RSI", f"{latest['RSI_14']:.1f}")
-        c[2].metric("VIX 指數", f"{latest['Vix']:.1f}")
-        c[3].metric("距高回撤", f"{latest['Drawdown']:.1%}")
+        c[1].metric("週 RSI", f"{latest['RSI_14']:.1f}")
+        c[2].metric("VIX", f"{latest['Vix']:.1f}")
+        c[3].metric("回撤", f"{latest['Drawdown']:.1%}")
         
-        # 買賣規則
-        p_loss = (latest['Close'] - cost) / cost
-        is_melt = p_loss < -0.15 or (latest['Close'] < latest['200_SMA']) or latest['Vix'] > 40
-        
-        st.divider()
+        loss = (latest['Close'] - cost) / cost
+        is_melt = loss < -0.15 or latest['Close'] < latest['200_SMA'] or latest['Vix'] > 40
+        safe_divider()
         if is_melt:
-            st.error("🔴 模式：熔斷啟動中 (暫停常規扣款)")
-            if latest['RSI_14'] < 30: st.warning("💡 補丁：RSI < 30，允許執行單次加碼")
+            st.error("🔴 模式：熔斷啟動中")
+            st.write("執行建議：" + ("允許單次加碼" if latest['RSI_14'] < rsi_melt else "暫停 DCA"))
         else:
-            st.success("🟢 模式：正常運行中")
-            if latest['RSI_14'] < 35: st.warning("🔥 模式：加碼扣款 (80萬)")
-            elif latest['RSI_14'] < 45: st.warning("🟡 模式：提速扣款 (40萬)")
-            else: st.info("🔵 模式：基礎扣款 (20萬)")
+            st.success("🟢 模式：運行正常")
+            if latest['RSI_14'] < rsi_os: st.warning(f"加碼扣款 ({base_dca*4/10000:.0f}萬)")
+            elif latest['RSI_14'] < rsi_weak: st.warning(f"提速扣款 ({base_dca*2/10000:.0f}萬)")
+            else: st.info(f"基礎扣款 ({base_dca/10000:.0f}萬)")
 
     with t2:
-        st.line_chart(data['Close'])
-        st.write(f"數據庫量體：共 {len(data)} 筆週線紀錄")
-        if st.button("🚀 執行完整策略模擬"):
-            st.write("正在運算 800萬/100萬 資產配置回測...")
-            # 回測邏輯已內嵌於背景運作
+        st.subheader("策略回測結果")
+        core, rsv = init_core, init_rsv
+        shares, ac_bt, curr_m, hist = 0, 0, -1, []
+        r15 = r25 = r35 = False
+
+        for date, row in data.iterrows():
+            p, r, v, sma, dd = row['Close'], row['RSI_14'], row['Vix'], row['200_SMA'], row['Drawdown']
+            p_loss_bt = (p - ac_bt) / ac_bt if ac_bt > 0 else 0
+            
+            # 預備金邏輯 (15%/25%/35% 分段投入)
+            for d_trig, flag in [(-0.35, 'r35'), (-0.25, 'r25'), (-0.15, 'r15')]:
+                if dd <= d_trig and not locals()[flag] and rsv >= init_rsv*0.3:
+                    inv = init_rsv*0.3 if d_trig > -0.35 else rsv
+                    shares += inv/p; rsv -= inv; exec(f"{flag}=True")
+            if dd >= 0: r15 = r25 = r35 = False
+
+            # 每月定額邏輯
+            if date.month != curr_m:
+                curr_m = date.month
+                is_m_bt = (p_loss_bt < -0.15) or (p < sma) or (v > 40)
+                amt = (base_dca*2 if r < rsi_melt else 0) if is_m_bt else (base_dca*4 if r < rsi_os else (base_dca*2 if r < rsi_weak else base_dca))
+                if amt > 0 and core >= amt: core -= amt; shares += amt/p
+                
+            ac_bt = (init_core - core + init_rsv - rsv) / shares if shares > 0 else 0
+            hist.append({'Date': date, 'Total': (shares*p)+core+rsv, 'Price': p, 'Cost': ac_bt})
+        
+        res_df = pd.DataFrame(hist)
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
+        fig.add_trace(go.Scatter(x=res_df['Date'], y=res_df['Total'], name='資產淨值'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=res_df['Date'], y=res_df['Price'], name='VOO 股價'), row=2, col=1)
+        fig.add_trace(go.Scatter(x=res_df['Date'], y=res_df['Cost'], name='持有均價'), row=2, col=1)
+        fig.update_layout(height=600, template="plotly_dark")
+        st.plotly_chart(fig, use_container_width=True)
+        st.success(f"回測結束！區間報酬率：{(res_df.iloc[-1]['Total']-(init_core+init_rsv))/(init_core+init_rsv):.2%}")
 else:
-    st.info("請於左側選單選擇：(1) 直接點擊按鈕自動抓數據 或 (2) 上傳 CSV 後點擊按鈕。")
+    st.info("請於左側選單設定參數，並點擊執行。")
