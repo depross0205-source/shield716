@@ -1,0 +1,53 @@
+
+    <!DOCTYPE html>
+    <html lang="zh-TW">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>矛與盾 7.16 儀表板</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #121212; color: #ffffff; padding: 15px; margin: 0; }
+            .container { max-width: 600px; margin: 0 auto; }
+            .card { background-color: #1e1e1e; border-radius: 12px; padding: 20px; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.5); }
+            h1 { color: #e0e0e0; font-size: 22px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 15px; }
+            h2 { color: #aaaaaa; font-size: 16px; margin-top: 0; }
+            .data-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #2a2a2a; font-size: 15px; }
+            .data-row:last-child { border-bottom: none; }
+            .value { font-weight: bold; }
+            .action-text { font-size: 18px; font-weight: bold; margin: 15px 0 5px 0; color: #4caf50; }
+            .amount { font-size: 24px; font-weight: bold; color: #4db8ff; }
+            .reserve { color: #ffffff; font-weight: bold; }
+            .footer { text-align: center; color: #666; font-size: 12px; margin-top: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🛡️ 矛與盾 7.16 儀表板 ⚔️</h1>
+            
+            <div class="card">
+                <h2>📊 VOO 數據監控</h2>
+                <div class="data-row"><span>最新收盤價</span> <span class="value">$608.38</span></div>
+                <div class="data-row"><span>週線 RSI(14)</span> <span class="value">45.96</span></div>
+                <div class="data-row"><span>VIX 恐慌指數</span> <span class="value">25.81</span></div>
+                <div class="data-row"><span>距52週高點回撤</span> <span class="value">-4.69%</span></div>
+                <div class="data-row"><span>系統狀態</span> <span class="value">✅ 正常運行</span></div>
+            </div>
+
+            <div class="card">
+                <h2>🎯 核心 DCA 執行指令</h2>
+                <div class="action-text">🟢 正常/留意區：執行基礎 DCA</div>
+                <div class="data-row"><span>建議投入金額</span> <span class="amount">200,000 <span style="font-size:14px;color:#888;">TWD</span></span></div>
+            </div>
+
+            <div class="card">
+                <h2>🏦 100萬黑天鵝預備金</h2>
+                <div class="reserve" style="padding-top:10px;">無須動用預備金</div>
+            </div>
+            
+            <div class="footer">
+                數據更新時間：2026-03-19 08:20:06 (UTC)
+            </div>
+        </div>
+    </body>
+    </html>
+    
