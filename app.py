@@ -1,128 +1,35 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import numpy as np
-from fredapi import Fred
-
-st.set_page_config(page_title="矛與盾 v10", layout="wide")
-st.title("🛡️ 矛與盾 v10｜雲端版")
-
-# =========================
-# 1️⃣ FRED
-# =========================
-fred = Fred(api_key=st.secrets["FRED_API_KEY"])
-
-@st.cache_data(ttl=86400)
-def get_fred():
-    hy = fred.get_series("BAMLH0A0HYM2")
-    tips = fred.get_series("DFII10")
-    cape = fred.get_series("CAPE")
-
-    df = pd.DataFrame({"Date": hy.index, "HY": hy.values})
-    df["TIPS"] = tips.reindex(df.index)
-    df["CAPE"] = cape.reindex(df.index)
-
-    df["Date"] = pd.to_datetime(df["Date"])
-    return df.sort_values("Date").ffill()
-
-# =========================
-# 2️⃣ 市場資料
-# =========================
-@st.cache_data(ttl=3600)
-def get_data():
-    spy = yf.download("SPY", start="2003-01-01", interval="1wk")
-    vix = yf.download("^VIX", start="2003-01-01", interval="1wk")
-
-    if spy.empty or vix.empty:
-        st.error("❌ 無法抓取市場資料")
-        st.stop()
-
-    spy.index = spy.index.tz_localize(None)
-    vix.index = vix.index.tz_localize(None)
-
+File "/mount/src/shield716/app.py", line 54, in <module>
+    df = get_data()
+         ^^^^^^^^^^
+File "/home/adminuser/venv/lib/python3.12/site-packages/streamlit/runtime/caching/cache_utils.py", line 281, in __call__
+    return self._get_or_create_cached_value(args, kwargs, spinner_message)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/home/adminuser/venv/lib/python3.12/site-packages/streamlit/runtime/caching/cache_utils.py", line 326, in _get_or_create_cached_value
+    return self._handle_cache_miss(cache, value_key, func_args, func_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/home/adminuser/venv/lib/python3.12/site-packages/streamlit/runtime/caching/cache_utils.py", line 385, in _handle_cache_miss
+    computed_value = self._info.func(*func_args, **func_kwargs)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/mount/src/shield716/app.py", line 43, in get_data
     df = pd.DataFrame({
-        "Date": spy.index,
-        "Close": spy["Close"],
-        "VIX": vix["Close"]
-    })
-
-    return df.sort_values("Date").ffill().dropna()
-
-# =========================
-# 3️⃣ 合併
-# =========================
-df = get_data()
-fred_df = get_fred()
-
-df = pd.merge(df, fred_df, on="Date", how="left")
-df = df.sort_values("Date").ffill().dropna()
-
-# 限制資料量（避免雲端卡死）
-df = df.tail(1500)
-
-# =========================
-# 4️⃣ 指標
-# =========================
-def get_rsi(s, p=14):
-    d = s.diff()
-    g = d.clip(lower=0)
-    l = -d.clip(upper=0)
-    ag = g.ewm(com=p-1).mean()
-    al = l.ewm(com=p-1).mean()
-    rs = ag / (al + 1e-9)
-    return 100 - (100/(1+rs))
-
-df["RSI"] = get_rsi(df["Close"])
-df["SMA"] = df["Close"].rolling(200).mean()
-
-# =========================
-# 5️⃣ Macro Score
-# =========================
-def macro(row):
-    score = 0
-    if row["HY"] > 6: score -= 1
-    if row["TIPS"] > 1.5: score -= 1
-    if row["CAPE"] > 30: score -= 1
-    return score
-
-df["Macro"] = df.apply(macro, axis=1)
-
-# =========================
-# 6️⃣ 回測
-# =========================
-if st.button("🚀 執行回測"):
-
-    cash = 10_000_000
-    shares = 0
-    history = []
-    current_month = None
-
-    for _, r in df.iterrows():
-        p = r["Close"]
-        date = r["Date"]
-
-        m_key = (date.year, date.month)
-        if m_key != current_month:
-            current_month = m_key
-
-            invest = 200000
-
-            if r["RSI"] < 30:
-                invest *= 4
-            elif r["RSI"] < 40:
-                invest *= 2
-
-            if r["Macro"] <= -2:
-                invest *= 2.5
-
-            if cash >= invest:
-                cash -= invest
-                shares += invest / p
-
-        total = cash + shares * p
-
-        history.append({"Date": date, "Value": total})
-
-    res = pd.DataFrame(history).set_index("Date")
-
-    st.line_chart(res)
+         ^^^^^^^^^^^^^^
+File "/home/adminuser/venv/lib/python3.12/site-packages/pandas/core/frame.py", line 782, in __init__
+    mgr = dict_to_mgr(data, index, columns, dtype=dtype, copy=copy, typ=manager)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/home/adminuser/venv/lib/python3.12/site-packages/pandas/core/internals/construction.py", line 503, in dict_to_mgr
+    return arrays_to_mgr(arrays, columns, index, dtype=dtype, typ=typ, consolidate=copy)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/home/adminuser/venv/lib/python3.12/site-packages/pandas/core/internals/construction.py", line 119, in arrays_to_mgr
+    arrays, refs = _homogenize(arrays, index, dtype)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/home/adminuser/venv/lib/python3.12/site-packages/pandas/core/internals/construction.py", line 629, in _homogenize
+    val = sanitize_array(val, index, dtype=dtype, copy=False)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/home/adminuser/venv/lib/python3.12/site-packages/pandas/core/construction.py", line 630, in sanitize_array
+    return sanitize_array(
+           ^^^^^^^^^^^^^^^
+File "/home/adminuser/venv/lib/python3.12/site-packages/pandas/core/construction.py", line 656, in sanitize_array
+    subarr = _sanitize_ndim(subarr, data, dtype, index, allow_2d=allow_2d)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/home/adminuser/venv/lib/python3.12/site-packages/pandas/core/construction.py", line 715, in _sanitize_ndim
+    raise ValueError(
